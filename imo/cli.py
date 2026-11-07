@@ -14,6 +14,7 @@ from dotenv import find_dotenv, load_dotenv
 from imo.agent import IncidentAgent
 from imo.analysis import TASKS, analyze
 from imo.connectors.teams import TeamsJoinError, TeamsSession
+from imo.connectors.teams.avatar import avatar_video
 from imo.llm import PROVIDERS, LLMError, make_llm
 from imo.llm.providers import DEFAULT_MODELS
 from imo.models import ChatMessage
@@ -33,6 +34,13 @@ def build_parser() -> argparse.ArgumentParser:
     join.add_argument("--name", default=DEFAULT_NAME, help=f"Nom affiché (défaut : {DEFAULT_NAME!r})")
     join.add_argument("--incident", help="Référence de l'incident (sinon : « imv démarrer <ID> » dans le chat)")
     join.add_argument("--no-welcome", action="store_true", help="Ne pas poster le message d'accueil")
+    join.add_argument(
+        "--avatar",
+        nargs="?",
+        const="robot",
+        metavar="IMAGE",
+        help="Caméra allumée avec un avatar : le robot IMV (sans valeur) ou une image PNG/JPEG",
+    )
     _add_llm_arguments(join, required=False)
     join.add_argument("--db", type=Path, default=DEFAULT_DB, help=f"Base SQLite (défaut : {DEFAULT_DB})")
     join.add_argument("--out", type=Path, help="Copie des messages dans un fichier JSONL")
@@ -75,7 +83,12 @@ def _add_llm_arguments(parser: argparse.ArgumentParser, *, required: bool) -> No
 async def run_join(args: argparse.Namespace) -> int:
     log = logging.getLogger("imo")
     sinks = [ConsoleSink()] + ([JsonlSink(args.out)] if args.out else [])
-    session = TeamsSession(args.url, args.name, headless=args.headless, debug_dir=args.debug_dir)
+    camera_video = None
+    if args.avatar:
+        camera_video = avatar_video(None if args.avatar == "robot" else Path(args.avatar))
+    session = TeamsSession(
+        args.url, args.name, headless=args.headless, debug_dir=args.debug_dir, camera_video=camera_video
+    )
     llm = make_llm(args.llm, args.llm_model) if args.llm else None
     if llm:
         log.info("Analyses avec %s", llm.name)
@@ -218,7 +231,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     try:
         return asyncio.run(runner(args))
-    except (ValueError, LLMError) as exc:
+    except (ValueError, OSError, LLMError) as exc:
         print(f"Erreur : {exc}", file=sys.stderr)
         return 1
 

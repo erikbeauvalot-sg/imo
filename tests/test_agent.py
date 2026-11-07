@@ -86,6 +86,40 @@ def test_analysis_command_runs_in_background():
     assert store.count_messages(sid) == 3
 
 
+def test_ask_com_and_usage_errors():
+    async def scenario():
+        llm = FakeLLM()
+        agent, chat, _, _ = _agent(llm=llm)
+        await agent.handle(_msg("Alice", "Erreurs 500 sur le paiement", "m1"))
+        await agent.handle(_msg("Bob", "imv ? quelle est la cause ?", "m2"))
+        await agent.handle(_msg("Bob", "imv com utilisateurs", "m3"))
+        await agent.handle(_msg("Bob", "imv ?", "m4"))
+        await agent.handle(_msg("Bob", "imv com presse", "m5"))
+        await agent.wait_analyses()
+        return chat.sent, llm.prompts
+
+    sent, prompts = asyncio.run(scenario())
+    assert len(prompts) == 2
+    assert "Question : quelle est la cause ?" in prompts[0]
+    assert "audience « utilisateurs »" in prompts[1]
+    assert any("Posez votre question" in s for s in sent)
+    assert any("Audience inconnue" in s for s in sent)
+
+
+def test_secret_posted_alert():
+    async def scenario():
+        agent, chat, store, sid = _agent()
+        await agent.handle(_msg("Thomas", "mot de passe : Xk9!pq2", "m1"))
+        await agent.handle(_msg("Alice", "le token a expiré", "m2"))  # pas un secret
+        await agent.handle(_msg("Bob", "imv pause", "m3"))
+        await agent.handle(_msg("Thomas", "password=hunter22", "m4"))  # en pause : pas d'alerte
+        return chat.sent, store.interventions(sid)
+
+    sent, interventions = asyncio.run(scenario())
+    assert len(sent) == 2 and sent[0].startswith("Attention : le message de Thomas")
+    assert (interventions[0]["type"], interventions[0]["rule_id"]) == ("proactive", "secret_posted")
+
+
 def test_analysis_error_and_missing_llm():
     async def scenario():
         agent, chat, _, _ = _agent(llm=FakeLLM(error=True))

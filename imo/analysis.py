@@ -47,7 +47,60 @@ TASKS = {
         "Liste les actions identifiées, une ligne par action : "
         "« • action — owner : … — statut : … ». Écris « owner : non désigné » s'il manque."
     ),
+    "ask": (
+        "Réponds à la question de l'IM ci-dessous en t'appuyant uniquement sur le chat, en 5 lignes "
+        "maximum. Cite entre crochets l'heure et l'auteur des messages utilisés, ex. [10:12 Thomas]. "
+        "Si le chat ne permet pas de répondre, dis-le.\nQuestion : {arg}"
+    ),
+    "com": (
+        "Rédige un brouillon de communication d'incident pour l'audience « {audience} », prêt à être "
+        "copié par l'IM. {guidance} Structure : Objet (une ligne), Situation, Impact, Actions en cours, "
+        "Prochaine communication (« à définir » si l'heure n'est pas dans le chat). "
+        "N'affirme rien qui ne soit pas dans le chat."
+    ),
 }
+
+# Audiences de « imv com » : alias → (libellé, consignes de ton et de contenu).
+COM_AUDIENCES = {
+    "direction": (
+        "direction / management",
+        "Ton sobre, 8 lignes maximum, orienté impact métier, risques et délai estimé ; aucun détail technique.",
+    ),
+    "utilisateurs": (
+        "utilisateurs",
+        "Langage simple et rassurant, 6 lignes maximum : ce qui ne marche pas, contournement éventuel, "
+        "prochaine information ; ni hypothèse ni jargon.",
+    ),
+    "tech": (
+        "équipes techniques",
+        "Précis et factuel, 12 lignes maximum : symptômes, composants touchés, hypothèses et leur statut, "
+        "actions et owners.",
+    ),
+}
+_AUDIENCE_ALIASES = {
+    "direction": "direction", "mgmt": "direction", "management": "direction", "manager": "direction",
+    "utilisateurs": "utilisateurs", "users": "utilisateurs", "user": "utilisateurs", "clients": "utilisateurs",
+    "tech": "tech", "technique": "tech", "techniques": "tech",
+}
+
+
+def resolve_audience(arg: str) -> str | None:
+    """« mgmt » → « direction » ; défaut « direction » ; None si l'audience est inconnue."""
+    word = arg.split()[0].lower() if arg.strip() else "direction"
+    return _AUDIENCE_ALIASES.get(word)
+
+
+def messages_since(messages: Iterable[Mapping], hour: str) -> list[Mapping]:
+    """Messages postés à partir de « HH:MM » (heure locale, même journée)."""
+    return [m for m in messages if _local_hour(m["sent_at"] or m["captured_at"]) >= hour]
+
+
+_HOUR = re.compile(r"^([01]?\d|2[0-3])[:h]([0-5]\d)$")
+
+
+def parse_hour(arg: str) -> str | None:
+    m = _HOUR.match(arg.strip().split()[0]) if arg.strip() else None
+    return f"{int(m[1]):02d}:{m[2]}" if m else None
 
 # Masquage des secrets avant envoi au LLM.
 _SECRETS = [
@@ -57,10 +110,23 @@ _SECRETS = [
 ]
 
 
+# Détection stricte pour l'alerte dans le chat (le masquage ci-dessus préfère l'excès de zèle) :
+# mot-clé suivi de « : » ou « = », ou format de jeton reconnaissable.
+_SECRET_POSTED = [
+    re.compile(r"(?i)\b(password|passwd|pwd|mot de passe|mdp|secret|token|api[_ -]?key)\s*[:=]\s*\S{4,}"),
+    _SECRETS[1],
+    _SECRETS[2],
+]
+
+
 def mask_secrets(text: str) -> str:
     for pattern in _SECRETS:
         text = pattern.sub(lambda m: (m.group(1) + " [MASQUÉ]") if m.lastindex else "[MASQUÉ]", text)
     return text
+
+
+def contains_secret(text: str) -> bool:
+    return any(p.search(text) for p in _SECRET_POSTED)
 
 
 def format_transcript(messages: Iterable[Mapping]) -> str:
@@ -82,13 +148,38 @@ def _local_hour(timestamp: str) -> str:
         return timestamp[11:16]
 
 
-async def analyze(llm: LLM, task: str, messages: Iterable[Mapping], incident_ref: str | None = None) -> str:
+class UsageError(ValueError):
+    """Argument de commande invalide : le message s'adresse directement à l'utilisateur."""
+
+
+def build_instruction(task: str, arg: str = "") -> str:
+    if task == "ask":
+        if not arg.strip():
+            raise UsageError("Posez votre question après « imv ? », par exemple : imv ? quelle est la cause ?")
+        return TASKS["ask"].format(arg=mask_secrets(arg.strip()))
+    if task == "com":
+        audience = resolve_audience(arg)
+        if audience is None:
+            raise UsageError("Audience inconnue. Choix : imv com direction | utilisateurs | tech")
+        label, guidance = COM_AUDIENCES[audience]
+        return TASKS["com"].format(audience=label, guidance=guidance)
+    return TASKS[task]
+
+
+async def analyze(
+    llm: LLM, task: str, messages: Iterable[Mapping], incident_ref: str | None = None, arg: str = ""
+) -> str:
+    instruction = build_instruction(task, arg)
+    messages = list(messages)
+    if task == "catchup" and (since := parse_hour(arg)):
+        messages = messages_since(messages, since)
+        instruction += f" Ne résume que ce qui s'est passé depuis {since}."
     transcript = format_transcript(messages)
     if not transcript:
         return "Aucun message à analyser pour l'instant."
     prompt = (
         f"Incident : {incident_ref or 'référence non renseignée'}\n\n"
         f"<chat>\n{transcript}\n</chat>\n\n"
-        f"Consigne : {TASKS[task]}"
+        f"Consigne : {instruction}"
     )
     return await llm.complete(SYSTEM, prompt)

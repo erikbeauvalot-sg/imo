@@ -9,6 +9,7 @@ dependencies = [
     "openai>=1.50",
     "azure-identity>=1.19",
     "python-dotenv>=1.0",
+    "pillow>=10.1",
 ]
 
 [project.optional-dependencies]

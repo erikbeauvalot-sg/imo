@@ -9,6 +9,7 @@ import pytest
 
 from imo.agent import WELCOME, IncidentAgent
 from imo.connectors.teams import TeamsJoinError, TeamsSession, validate_display_name
+from imo.connectors.teams.avatar import avatar_video
 from imo.connectors.teams.join import disable_app_launch, validate_meeting_url
 from imo.models import ChatMessage
 from imo.storage import Store
@@ -17,9 +18,14 @@ FIXTURE = (Path(__file__).parent / "fixtures" / "fake_teams.html").read_text(enc
 MEETING_URL = "https://teams.microsoft.com/l/meetup-join/19%3ameeting_test%40thread.v2/0"
 
 
-async def _session(query: str = "", tmp_path: Path | None = None) -> TeamsSession:
+async def _session(query: str = "", tmp_path: Path | None = None, camera_video: Path | None = None) -> TeamsSession:
     session = TeamsSession(
-        MEETING_URL + query, "IMV - Assistant IM", headless=True, debug_dir=tmp_path, resolve_launcher=False
+        MEETING_URL + query,
+        "IMV - Assistant IM",
+        headless=True,
+        debug_dir=tmp_path,
+        resolve_launcher=False,
+        camera_video=camera_video,
     )
     await session.start()
 
@@ -128,6 +134,32 @@ def test_agent_welcome_and_commands_in_chat():
         ("Bob Durand", "imv démarrer INC0012345"),
     ]
     assert incident["ref"] == "INC0012345"
+
+
+@pytest.mark.parametrize("query", ["?lobby=100", "?lobby=100&camoff=1"])
+def test_avatar_keeps_camera_on(query):
+    async def scenario():
+        session = await _session(query, camera_video=avatar_video())
+        try:
+            await session.join(admission_timeout=10)
+            return await session.page.evaluate("window.joinedMedia")
+        finally:
+            await session.close()
+
+    assert asyncio.run(scenario()) == {"camera": True, "mic": False, "noAudio": True}
+
+
+def test_avatar_video_files(tmp_path):
+    from PIL import Image
+
+    robot = avatar_video()
+    header, frame = robot.read_bytes().split(b"\n", 2)[0], robot.read_bytes().split(b"FRAME\n", 1)[1]
+    assert header == b"YUV4MPEG2 W640 H360 F15:1 Ip A1:1 C420jpeg"
+    assert len(frame) == 640 * 360 * 3 // 2
+    # Image fournie, ratio quelconque : centrée sur un fond 16:9
+    Image.new("RGB", (100, 300), (255, 0, 0)).save(tmp_path / "logo.png")
+    custom = avatar_video(tmp_path / "logo.png")
+    assert custom != robot and custom.stat().st_size == robot.stat().st_size
 
 
 def test_send_chat_when_read_only():
