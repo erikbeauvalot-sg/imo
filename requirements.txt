@@ -1,0 +1,9 @@
+# Dépendances d'exécution, pour une installation avec pip seul (sans uv).
+# Doivent rester identiques à [project.dependencies] de pyproject.toml :
+# tests/test_requirements.py le vérifie.
+playwright>=1.48
+anthropic>=2.6
+openai>=1.50
+azure-identity>=1.19
+python-dotenv>=1.0
+pillow>=10.1

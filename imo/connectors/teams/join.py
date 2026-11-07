@@ -112,6 +112,7 @@ class TeamsSession:
         debug_dir: Path | None = None,
         resolve_launcher: bool = True,
         camera_video: Path | None = None,
+        browser: str | None = None,
     ) -> None:
         self.url = validate_meeting_url(url)
         self.display_name = validate_display_name(display_name)
@@ -121,6 +122,9 @@ class TeamsSession:
         self.resolve_launcher = resolve_launcher
         # Vidéo Y4M diffusée par la caméra (avatar) ; None = caméra coupée.
         self.camera_video = camera_video
+        # chromium (téléchargé par « playwright install »), chrome ou msedge (déjà installés) ;
+        # None = chromium, sinon Chrome puis Edge s'il n'est pas installé.
+        self.browser = browser
         self._pw: Playwright | None = None
         self._browser: Browser | None = None
         self._context: BrowserContext | None = None
@@ -131,18 +135,16 @@ class TeamsSession:
     async def start(self) -> None:
         self._pw = await async_playwright().start()
         silence, black = _blank_media_files()
-        self._browser = await self._pw.chromium.launch(
-            headless=self.headless,
-            args=[
-                "--use-fake-ui-for-media-stream",
-                "--use-fake-device-for-media-stream",
-                # Par défaut, les faux périphériques envoient une mire et un bip :
-                # silence et image noire si la caméra ou le micro restaient allumés.
-                f"--use-file-for-fake-audio-capture={silence}",
-                f"--use-file-for-fake-video-capture={self.camera_video or black}",
-                "--disable-blink-features=AutomationControlled",
-            ],
-        )
+        args = [
+            "--use-fake-ui-for-media-stream",
+            "--use-fake-device-for-media-stream",
+            # Par défaut, les faux périphériques envoient une mire et un bip :
+            # silence et image noire si la caméra ou le micro restaient allumés.
+            f"--use-file-for-fake-audio-capture={silence}",
+            f"--use-file-for-fake-video-capture={self.camera_video or black}",
+            "--disable-blink-features=AutomationControlled",
+        ]
+        self._browser = await self._launch_browser(args)
         self._context = await self._browser.new_context(
             locale="en-US",
             user_agent=_DESKTOP_UA,
@@ -151,6 +153,28 @@ class TeamsSession:
         )
         await self._context.route("**/dl/launcher/launcher.html*", self._block_app_launch)
         self.page = await self._context.new_page()
+
+    async def _launch_browser(self, args: list[str]) -> Browser:
+        assert self._pw is not None
+        candidates = [self.browser] if self.browser else ["chromium", "chrome", "msedge"]
+        errors = []
+        for name in candidates:
+            try:
+                # Profil temporaire vierge dans tous les cas, jamais celui de l'utilisateur.
+                browser = await self._pw.chromium.launch(
+                    headless=self.headless, args=args, channel=None if name == "chromium" else name
+                )
+            except Exception as exc:  # noqa: BLE001 — navigateur absent : on essaie le suivant
+                errors.append(f"{name} : {str(exc).splitlines()[0]}")
+                continue
+            if name != candidates[0]:
+                log.info("Chromium de Playwright absent : utilisation de %s", name)
+            return browser
+        raise TeamsJoinError(
+            "browser_missing",
+            "aucun navigateur utilisable. Installez Google Chrome ou Microsoft Edge, "
+            "ou lancez « python -m playwright install chromium ». Détails : " + " ; ".join(errors),
+        )
 
     async def _block_app_launch(self, route) -> None:
         request = route.request

@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
+import os
 import signal
 import sys
 from pathlib import Path
@@ -45,6 +46,13 @@ def build_parser() -> argparse.ArgumentParser:
     join.add_argument("--db", type=Path, default=DEFAULT_DB, help=f"Base SQLite (défaut : {DEFAULT_DB})")
     join.add_argument("--out", type=Path, help="Copie des messages dans un fichier JSONL")
     join.add_argument("--headless", action="store_true", help="Navigateur invisible")
+    join.add_argument(
+        "--browser",
+        choices=("chromium", "chrome", "msedge"),
+        default=os.environ.get("IMV_BROWSER") or None,
+        help="Navigateur : chromium (playwright install), chrome ou msedge déjà installés "
+        "(défaut : $IMV_BROWSER, sinon chromium puis chrome puis msedge)",
+    )
     join.add_argument("--admission-timeout", type=float, default=600, help="Attente max. en salle d'attente (s)")
     join.add_argument("--debug-dir", type=Path, default=Path("debug"), help="Captures en cas d'échec")
     join.add_argument("-v", "--verbose", action="store_true")
@@ -87,7 +95,12 @@ async def run_join(args: argparse.Namespace) -> int:
     if args.avatar:
         camera_video = avatar_video(None if args.avatar == "robot" else Path(args.avatar))
     session = TeamsSession(
-        args.url, args.name, headless=args.headless, debug_dir=args.debug_dir, camera_video=camera_video
+        args.url,
+        args.name,
+        headless=args.headless,
+        debug_dir=args.debug_dir,
+        camera_video=camera_video,
+        browser=args.browser,
     )
     llm = make_llm(args.llm, args.llm_model) if args.llm else None
     if llm:
@@ -234,6 +247,9 @@ def main(argv: list[str] | None = None) -> int:
     except (ValueError, OSError, LLMError) as exc:
         print(f"Erreur : {exc}", file=sys.stderr)
         return 1
+    except TeamsJoinError as exc:  # navigateur introuvable au démarrage
+        print(f"Erreur : {exc}", file=sys.stderr)
+        return 2
 
 
 if __name__ == "__main__":

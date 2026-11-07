@@ -162,6 +162,41 @@ def test_avatar_video_files(tmp_path):
     assert custom != robot and custom.stat().st_size == robot.stat().st_size
 
 
+def test_missing_browser_is_reported():
+    async def scenario():
+        session = TeamsSession(MEETING_URL, "IMV - Assistant IM", headless=True, browser="navigateur-absent")
+        try:
+            await session.start()
+        finally:
+            await session.close()
+
+    with pytest.raises(TeamsJoinError) as exc:
+        asyncio.run(scenario())
+    assert exc.value.code == "browser_missing" and "Microsoft Edge" in str(exc.value)
+
+
+@pytest.mark.parametrize("channel", ["chrome", "msedge"])
+def test_installed_browser_channel(channel):
+    """Chrome / Edge installés (cas d'un poste où « playwright install » est bloqué)."""
+    async def scenario():
+        session = TeamsSession(MEETING_URL, "IMV - Assistant IM", headless=True, resolve_launcher=False, browser=channel)
+        try:
+            await session.start()
+        except TeamsJoinError:
+            pytest.skip(f"{channel} n'est pas installé sur cette machine")
+        try:
+            async def serve_fixture(route):
+                await route.fulfill(status=200, content_type="text/html", body=FIXTURE)
+
+            await session._context.route("https://teams.microsoft.com/**", serve_fixture)
+            await session.join(admission_timeout=10)
+            return await session.page.evaluate("window.joinedAs")
+        finally:
+            await session.close()
+
+    assert asyncio.run(scenario()) == "IMV - Assistant IM"
+
+
 def test_send_chat_when_read_only():
     async def scenario():
         session = await _session("?lobby=100&readonly=1")

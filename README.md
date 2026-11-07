@@ -4,11 +4,27 @@ Prototype de l'Étape 0 (voir `PLAN.md` et `ETUDE_FAISABILITE.md`) : un agent qu
 
 ## Installation
 
+Python 3.11 ou plus. Deux façons équivalentes :
+
+**Avec pip seul** (ex. poste du bureau, sans uv) :
+
+```bash
+python3.11 -m venv .venv
+.venv/bin/pip install -r requirements-dev.txt     # requirements.txt sans les tests
+.venv/bin/python -m playwright install chromium
+```
+
+**Avec uv** :
+
 ```bash
 uv venv --python 3.12 .venv
 uv pip install -e '.[dev]'
 .venv/bin/playwright install chromium
 ```
+
+Si `playwright install chromium` échoue (proxy ou filtrage du réseau d'entreprise), inutile d'insister : l'agent utilise alors **Google Chrome ou Microsoft Edge déjà installés** (essayés dans cet ordre si le Chromium de Playwright est absent). Pour imposer un navigateur : `--browser chrome|msedge|chromium`, ou `IMV_BROWSER=msedge` dans `.env`. Dans tous les cas un profil temporaire vierge est utilisé, jamais votre profil personnel. Pour retenter le téléchargement derrière un proxy : `HTTPS_PROXY=http://proxy:port python -m playwright install chromium`.
+
+`pyproject.toml` fait référence pour les dépendances ; `requirements.txt` et `requirements-dev.txt` doivent rester identiques, ce que vérifie `tests/test_requirements.py`. Après l'ajout d'une dépendance, mettre à jour les deux.
 
 ## Utilisation
 
