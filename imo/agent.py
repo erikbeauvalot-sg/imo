@@ -11,7 +11,7 @@ from collections import deque
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
-from imo.analysis import TASKS, analyze
+from imo.analysis import TASKS, UsageError, analyze, contains_secret
 from imo.llm import LLM, LLMError
 from imo.models import ChatMessage
 from imo.sinks import Sink
@@ -30,10 +30,12 @@ HELP = (
     "Commandes IMV, à taper dans le chat :\n"
     "imv démarrer [ID incident] : démarre le suivi de l'incident\n"
     "imv résumé : point de situation\n"
-    "imv catchup : résumé court pour un nouvel arrivant\n"
+    "imv catchup [HH:MM] : résumé court pour un nouvel arrivant, depuis une heure donnée\n"
     "imv questions : questions à poser maintenant\n"
     "imv timeline : chronologie des événements\n"
     "imv actions : actions identifiées et owners\n"
+    "imv com [direction|utilisateurs|tech] : brouillon de communication\n"
+    "imv ? <question> : question libre sur l'incident\n"
     "imv statut : état de l'agent\n"
     "imv pause / imv reprise : suspend / reprend l'enregistrement du chat\n"
     "imv aide : cette aide"
@@ -50,11 +52,12 @@ _ALIASES = {
     "reprendre": "reprise",
     "statut": "statut",
     "status": "statut",
+    "?": "ask",
 }
 # Commandes prévues plus tard : reconnues, mais pas encore disponibles.
-_LATER = {"com", "clore"}
+_LATER = {"clore"}
 # Orthographe affichée des formes canoniques qui portent un accent.
-_DISPLAY = {"demarrer": "démarrer", "resume": "résumé"}
+_DISPLAY = {"demarrer": "démarrer", "resume": "résumé", "ask": "?"}
 
 _COMMAND = re.compile(r"^\s*imv\b[\s:,.!-]*(?P<word>\S*)\s*(?P<arg>.*)$", re.IGNORECASE | re.DOTALL)
 
@@ -130,9 +133,19 @@ class IncidentAgent:
             return
         if not self.paused and self.store.add_message(self.session_id, msg) and self.sink:
             self.sink.write(msg)
-        command = parse_command(msg.text) if msg.source == "chat" else None
-        if command is not None and not msg.backlog:
+        if msg.source != "chat" or msg.backlog:
+            return
+        command = parse_command(msg.text)
+        if command is not None:
             await self.execute(command, msg.sender)
+        elif not self.paused and contains_secret(msg.text):
+            await self.reply(
+                f"Attention : le message de {msg.sender} semble contenir un mot de passe ou un jeton. "
+                "Supprimez-le du chat et faites changer ce secret ; partagez-le plutôt par un canal sécurisé. "
+                "(Il n'est pas transmis à l'analyse.)",
+                kind="proactive",
+                rule_id="secret_posted",
+            )
 
     async def execute(self, command: Command, author: str) -> None:
         if command.verb in TASKS:
@@ -162,8 +175,14 @@ class IncidentAgent:
         incident = self.store.session_incident(self.session_id)
         try:
             text = await analyze(
-                self.llm, command.verb, self.store.messages(self.session_id), incident["ref"] if incident else None
+                self.llm,
+                command.verb,
+                self.store.messages(self.session_id),
+                incident["ref"] if incident else None,
+                command.arg,
             )
+        except UsageError as exc:
+            text = str(exc)
         except LLMError as exc:
             log.error("Analyse « %s » impossible : %s", command.word, exc)
             text = f"Analyse « {command.word} » impossible pour le moment ({exc})."
@@ -174,11 +193,11 @@ class IncidentAgent:
         if self._analyses:
             await asyncio.gather(*self._analyses, return_exceptions=True)
 
-    async def reply(self, text: str, *, kind: str = "command") -> bool:
+    async def reply(self, text: str, *, kind: str = "command", rule_id: str | None = None) -> bool:
         fingerprint = _fingerprint(text)
         self._own.append(fingerprint)
         delivered = await self.send(text)
-        self.store.add_intervention(self.session_id, kind, text, delivered)
+        self.store.add_intervention(self.session_id, kind, text, delivered, rule_id)
         if delivered:
             log.info("IMV → chat : %s", text.splitlines()[0])
         else:

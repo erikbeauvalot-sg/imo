@@ -10,7 +10,9 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import pytest
 
-from imo.analysis import SYSTEM, analyze, format_transcript, mask_secrets
+from datetime import datetime
+
+from imo.analysis import SYSTEM, analyze, contains_secret, format_transcript, mask_secrets, resolve_audience
 from imo.llm import LLMError, make_llm
 from imo.llm.providers import ClaudeCLI, Ollama
 
@@ -64,6 +66,40 @@ def test_analyze_builds_prompt():
     system, prompt = llm.calls[0]
     assert system == SYSTEM
     assert "Incident : INC42" in prompt and "<chat>" in prompt and "Alice : Erreurs 500" in prompt
+
+
+def test_catchup_since_hour():
+    llm = FakeLLM()
+    rows = [
+        _row("Alice", "ancien message", "2026-11-07T08:00:00+00:00"),
+        _row("Bob", "message récent", "2026-11-07T09:30:00+00:00"),
+    ]
+    since = datetime.fromisoformat("2026-11-07T09:00:00+00:00").astimezone().strftime("%H:%M")
+    asyncio.run(analyze(llm, "catchup", rows, arg=since))
+    prompt = llm.calls[0][1]
+    assert "message récent" in prompt and "ancien message" not in prompt
+    assert f"depuis {since}" in prompt
+
+
+@pytest.mark.parametrize(
+    "arg, expected", [("", "direction"), ("mgmt", "direction"), ("users", "utilisateurs"), ("Tech", "tech")]
+)
+def test_resolve_audience(arg, expected):
+    assert resolve_audience(arg) == expected
+
+
+@pytest.mark.parametrize(
+    "text, expected",
+    [
+        ("mot de passe : Xk9!pq2", True),
+        ("api_key=abcd1234", True),
+        ("voici ghp_abcdefghijklmnop", True),
+        ("le token a expiré", False),
+        ("quel est le mot de passe du compte ?", False),
+    ],
+)
+def test_contains_secret(text, expected):
+    assert contains_secret(text) is expected
 
 
 def test_analyze_without_messages_does_not_call_llm():

@@ -41,6 +41,12 @@ CAMERA_ON = [
     'button[aria-label^="Turn camera off"]',
     'button[aria-label^="Turn off camera"]',
 ]
+CAMERA_OFF = [
+    '[role="switch"][data-tid="toggle-video"][title^="Turn camera on"]',
+    '[role="switch"][title^="Turn camera on"]',
+    'button[aria-label^="Turn camera on"]',
+    'button[aria-label^="Turn on camera"]',
+]
 MIC_ON = [
     '[role="switch"][data-tid="toggle-mute"][title^="Mute mic"]',
     '[role="switch"][title^="Mute mic"]',

@@ -5,7 +5,8 @@
 <!-- Imitation minimale du parcours invité de Teams web, pour les tests.
      Paramètres (query string) : lobby=ms (temps avant admission), reject=1,
      login=1 (redirection connexion), endAfter=ms (fin de réunion),
-     readonly=1 (chat fermé aux invités : pas de zone de saisie). -->
+     readonly=1 (chat fermé aux invités : pas de zone de saisie),
+     camoff=1 (caméra coupée au départ). -->
 <div id="app"></div>
 <script>
   const params = new URLSearchParams(location.search);
@@ -22,7 +23,7 @@
     // Interrupteurs comme dans le vrai Teams : le titre décrit l'action.
     app.innerHTML = `
       <input data-tid="prejoin-display-name-input" placeholder="Type your name">
-      <input role="switch" type="checkbox" data-tid="toggle-video" title="Turn camera off (Ctrl+Shift+O)" checked>
+      <input role="switch" type="checkbox" data-tid="toggle-video" ${params.get('camoff') ? 'title="Turn camera on (Ctrl+Shift+O)"' : 'title="Turn camera off (Ctrl+Shift+O)" checked'}>
       <input role="switch" type="checkbox" data-tid="toggle-mute" title="Mute mic (Ctrl+Shift+M)" checked>
       <input type="radio" name="audio" aria-label="Computer audio" checked>
       <input type="radio" name="audio" aria-label="Don't use audio">

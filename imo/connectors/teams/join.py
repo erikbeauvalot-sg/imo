@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
-import tempfile
 import time
 import wave
 from collections.abc import Callable
@@ -16,6 +15,7 @@ from urllib.parse import parse_qsl, urlencode, urljoin, urlparse, urlunparse
 from playwright.async_api import Browser, BrowserContext, Page, Playwright, async_playwright
 
 from imo.connectors.teams import selectors as sel
+from imo.connectors.teams.avatar import media_dir
 from imo.models import ChatMessage
 
 log = logging.getLogger(__name__)
@@ -45,19 +45,16 @@ def _sent_at_from_message_id(message_id: str | None) -> str | None:
 
 def _blank_media_files() -> tuple[Path, Path]:
     """Fichiers source des faux micro / caméra : 1 s de silence (WAV) et une image noire (Y4M)."""
-    folder = Path(tempfile.gettempdir()) / "imv-media"
-    folder.mkdir(exist_ok=True)
+    folder = media_dir()
     silence, black = folder / "silence.wav", folder / "black.y4m"
-    if not silence.exists():
-        with wave.open(str(silence), "wb") as wav:
-            wav.setnchannels(1)
-            wav.setsampwidth(2)
-            wav.setframerate(48000)
-            wav.writeframes(b"\x00\x00" * 48000)
-    if not black.exists():
-        width, height = 320, 240
-        frame = bytes([16]) * (width * height) + bytes([128]) * (width * height // 2)  # YUV 4:2:0 noir
-        black.write_bytes(f"YUV4MPEG2 W{width} H{height} F15:1 Ip A1:1 C420jpeg\nFRAME\n".encode() + frame)
+    with wave.open(str(silence), "wb") as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(48000)
+        wav.writeframes(b"\x00\x00" * 48000)
+    width, height = 320, 240
+    frame = bytes([16]) * (width * height) + bytes([128]) * (width * height // 2)  # YUV 4:2:0 noir
+    black.write_bytes(f"YUV4MPEG2 W{width} H{height} F15:1 Ip A1:1 C420jpeg\nFRAME\n".encode() + frame)
     return silence, black
 
 
@@ -114,6 +111,7 @@ class TeamsSession:
         headless: bool = False,
         debug_dir: Path | None = None,
         resolve_launcher: bool = True,
+        camera_video: Path | None = None,
     ) -> None:
         self.url = validate_meeting_url(url)
         self.display_name = validate_display_name(display_name)
@@ -121,6 +119,8 @@ class TeamsSession:
         self.debug_dir = debug_dir
         # Désactivé dans les tests : la résolution fait une requête réseau vers Teams.
         self.resolve_launcher = resolve_launcher
+        # Vidéo Y4M diffusée par la caméra (avatar) ; None = caméra coupée.
+        self.camera_video = camera_video
         self._pw: Playwright | None = None
         self._browser: Browser | None = None
         self._context: BrowserContext | None = None
@@ -139,7 +139,7 @@ class TeamsSession:
                 # Par défaut, les faux périphériques envoient une mire et un bip :
                 # silence et image noire si la caméra ou le micro restaient allumés.
                 f"--use-file-for-fake-audio-capture={silence}",
-                f"--use-file-for-fake-video-capture={black}",
+                f"--use-file-for-fake-video-capture={self.camera_video or black}",
                 "--disable-blink-features=AutomationControlled",
             ],
         )
@@ -232,12 +232,16 @@ class TeamsSession:
         name_input = await self._first_visible(sel.NAME_INPUT)
         if name_input is not None:
             await name_input.fill(self.display_name)
-        # V1 : ni caméra ni micro. Le choix « Don't use audio » sera retiré en V2 (écoute).
+        # V1 : pas de micro ; caméra coupée, sauf avatar. « Don't use audio » sera retiré en V2 (écoute).
         await self._click_first(sel.DONT_USE_AUDIO)
-        await self._click_first(sel.CAMERA_ON)
+        if self.camera_video:
+            await self._click_first(sel.CAMERA_OFF)  # bascule : allume la caméra si elle est coupée
+        else:
+            await self._click_first(sel.CAMERA_ON)
         await self._click_first(sel.MIC_ON)
         await self._click_first(sel.CONTINUE_WITHOUT_MEDIA)
-        for selectors, device in ((sel.CAMERA_ON, "caméra"), (sel.MIC_ON, "micro")):
+        checks = [(sel.MIC_ON, "micro")] + ([] if self.camera_video else [(sel.CAMERA_ON, "caméra")])
+        for selectors, device in checks:
             if await self._visible(selectors):
                 log.warning("Impossible de couper le %s : l'agent n'envoie que du noir / du silence", device)
 

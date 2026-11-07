@@ -22,7 +22,7 @@ uv pip install -e '.[dev]'
 4. Chaque message s'affiche dans la console et est enregistré dans la base SQLite `sessions/imv.db`.
 5. `Ctrl+C` pour quitter la réunion.
 
-Options : `--name` (nom affiché : lettres, chiffres, espaces et `- ' . _ @` uniquement), `--incident INC…`, `--no-welcome`, `--db`, `--out` (copie JSONL), `--headless`, `--admission-timeout`, `--debug-dir`, `-v`.
+Options : `--name` (nom affiché : lettres, chiffres, espaces et `- ' . _ @` uniquement), `--incident INC…`, `--no-welcome`, `--avatar [IMAGE]` (caméra allumée avec le robot IMV, ou votre image PNG/JPEG : un invité n'a pas de photo de profil), `--db`, `--out` (copie JSONL), `--headless`, `--admission-timeout`, `--debug-dir`, `-v`.
 
 ### Commandes dans le chat
 
