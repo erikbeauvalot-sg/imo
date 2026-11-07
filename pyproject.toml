@@ -1,0 +1,27 @@
+[project]
+name = "imo-agent"
+version = "0.1.0"
+description = "Incident Manager Virtuel — prototype : rejoint une réunion Teams par URL et lit le chat"
+requires-python = ">=3.11"
+dependencies = [
+    "playwright>=1.48",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[project.scripts]
+imo-agent = "imo.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["imo*"]
+
+[tool.setuptools.package-data]
+"imo.connectors.teams" = ["*.js"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

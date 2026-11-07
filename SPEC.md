@@ -1,0 +1,3 @@
+JE suis le mamanger d'une equipe d'Incident Manager Ils sont amener a ouvrir des call technicque via Teams pour faciliter la resolution de
+  l'incident. Pour les aider je voudrais un incident manager virtuel dans ce call teams qui les aide a faire des resumés, penser a poser des questions, ... Dans un premier temps uniquement en capturant tout ce qui est ecrit dans le chat du teams, puis dans un second temps en analisant le transctipte de la conversation.
+  

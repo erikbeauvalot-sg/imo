@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Fake Teams</title></head>
+<body>
+<!-- Imitation minimale du parcours invité de Teams web, pour les tests.
+     Paramètres (query string) : lobby=ms (temps avant admission), reject=1,
+     login=1 (redirection connexion), endAfter=ms (fin de réunion),
+     readonly=1 (chat fermé aux invités : pas de zone de saisie). -->
+<div id="app"></div>
+<script>
+  const params = new URLSearchParams(location.search);
+  const app = document.getElementById('app');
+  const lobbyMs = Number(params.get('lobby') || 300);
+  const endAfter = Number(params.get('endAfter') || 0);
+
+  function launcher() {
+    app.innerHTML = '<button id="continue">Continue on this browser</button>';
+    document.getElementById('continue').onclick = prejoin;
+  }
+
+  function prejoin() {
+    // Interrupteurs comme dans le vrai Teams : le titre décrit l'action.
+    app.innerHTML = `
+      <input data-tid="prejoin-display-name-input" placeholder="Type your name">
+      <input role="switch" type="checkbox" data-tid="toggle-video" title="Turn camera off (Ctrl+Shift+O)" checked>
+      <input role="switch" type="checkbox" data-tid="toggle-mute" title="Mute mic (Ctrl+Shift+M)" checked>
+      <input type="radio" name="audio" aria-label="Computer audio" checked>
+      <input type="radio" name="audio" aria-label="Don't use audio">
+      <button data-tid="prejoin-join-button" disabled>Join now</button>`;
+    const input = app.querySelector('[data-tid="prejoin-display-name-input"]');
+    const camera = app.querySelector('[data-tid="toggle-video"]');
+    const mic = app.querySelector('[data-tid="toggle-mute"]');
+    camera.onchange = () => { camera.title = camera.checked ? 'Turn camera off (Ctrl+Shift+O)' : 'Turn camera on (Ctrl+Shift+O)'; };
+    mic.onchange = () => { mic.title = mic.checked ? 'Mute mic (Ctrl+Shift+M)' : 'Unmute mic (Ctrl+Shift+M)'; };
+    const join = app.querySelector('[data-tid="prejoin-join-button"]');
+    input.oninput = () => { join.disabled = !/^[\w \-'.@]+$/.test(input.value); };
+    join.onclick = () => {
+      window.joinedAs = input.value;
+      window.joinedMedia = {
+        camera: camera.checked,
+        mic: mic.checked,
+        noAudio: app.querySelector('[aria-label="Don\'t use audio"]').checked,
+      };
+      lobby();
+    };
+  }
+
+  function lobby() {
+    app.innerHTML = '<p>Someone will let you in shortly</p>';
+    setTimeout(params.get('reject') ? rejected : meeting, lobbyMs);
+  }
+
+  function rejected() {
+    app.innerHTML = '<p>Sorry, but you were denied access to the meeting</p>';
+  }
+
+  function meeting() {
+    app.innerHTML = `
+      <div role="toolbar">
+        <button id="chat-button" aria-label="Chat">Chat</button>
+        <button id="hangup-button" aria-label="Leave">Leave</button>
+      </div>
+      <div id="pane"></div>`;
+    document.getElementById('hangup-button').onclick = () => { window.left = true; app.innerHTML = '<p>You left</p>'; };
+    document.getElementById('chat-button').onclick = openChat;
+    if (endAfter) setTimeout(() => { app.innerHTML = '<p>Meeting ended</p>'; }, endAfter);
+  }
+
+  let list;
+  let ownCount = 0;
+  window.sent = [];
+  function openChat() {
+    document.getElementById('pane').innerHTML =
+      '<div data-tid="chat-pane-list"></div>' +
+      (params.get('readonly') ? '' :
+        '<div role="textbox" contenteditable="true" aria-label="Type a message" data-tid="ckeditor"></div>');
+    list = document.querySelector('[data-tid="chat-pane-list"]');
+    // Un message déjà présent à l'ouverture du chat
+    addMessage('Alice Martin', "Le site de paiement renvoie des erreurs 500", 'm1', true);
+
+    const box = document.querySelector('[data-tid="ckeditor"]');
+    if (box) box.addEventListener('keydown', (e) => {
+      if (e.key !== 'Enter' || e.shiftKey) return;
+      e.preventDefault();
+      const text = box.innerText.trim();
+      if (!text) return;
+      window.sent.push(text);
+      // Comme Teams : ses propres messages s'affichent sans en-tête auteur.
+      addMessage(window.joinedAs, text, `own${++ownCount}`, false);
+      box.innerHTML = '';
+    });
+  }
+
+  // Reproduit le DOM Teams : l'auteur n'apparaît qu'en tête d'une suite de messages.
+  window.addMessage = (sender, text, mid, showHeader = true) => {
+    const item = document.createElement('div');
+    item.setAttribute('data-tid', 'chat-pane-message');
+    item.setAttribute('data-mid', mid);
+    if (showHeader) {
+      const author = document.createElement('span');
+      author.setAttribute('data-tid', 'message-author-name');
+      author.textContent = sender;
+      item.appendChild(author);
+    }
+    // Le vrai Teams n'a pas de <time> ; son identifiant numérique est l'horodatage.
+    if (!/^\d+$/.test(mid)) {
+      const time = document.createElement('time');
+      time.setAttribute('datetime', `2026-11-07T10:${String(list.children.length).padStart(2, '0')}:00Z`);
+      item.appendChild(time);
+    }
+    const body = document.createElement('div');
+    body.setAttribute('data-tid', 'messageBodyContent');
+    body.textContent = text;
+    item.appendChild(body);
+    list.appendChild(item);
+  };
+
+  // Liste virtualisée : un message est retiré puis re-rendu à l'identique.
+  window.rerenderFirst = () => {
+    const first = list.firstElementChild;
+    list.removeChild(first);
+    list.prepend(first.cloneNode(true));
+  };
+
+  if (params.get('login')) {
+    location.href = 'https://login.microsoftonline.com/common/oauth2/authorize';
+  } else {
+    launcher();
+  }
+</script>
+</body>
+</html>

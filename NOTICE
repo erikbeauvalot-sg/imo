@@ -1,0 +1,8 @@
+IMV — Incident Manager Virtuel
+
+Ce projet contient du code adapté de Vexa (https://github.com/Vexa-ai/vexa),
+distribué sous licence Apache License 2.0 :
+  - imo/connectors/teams/selectors.py  ← core/meetings/modules/join/src/msteams/selectors.ts
+  - imo/connectors/teams/chat_reader.js ← core/meetings/modules/teams-capture/src/teams-chat.ts
+Les fichiers ont été traduits (TypeScript → Python/JavaScript) et modifiés.
+Texte de la licence : https://www.apache.org/licenses/LICENSE-2.0
