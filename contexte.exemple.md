@@ -1,6 +1,6 @@
 # Contexte IMV — modèle
 
-Copiez ce fichier en `contexte.md`, remplacez les exemples par votre réalité, puis lancez l'agent avec `--context contexte.md` (ou `IMV_CONTEXT=contexte.md` dans `.env`). `contexte.md` n'est pas versionné (`.gitignore`).
+Copiez ce fichier en `contexte.md` et remplacez les exemples par votre réalité : l'agent le charge automatiquement s'il est dans le répertoire d'où vous le lancez (sinon `--context <fichier>` ou `IMV_CONTEXT` dans `.env`). `contexte.md` n'est pas versionné (`.gitignore`).
 
 Ce texte est envoyé au LLM avec chaque analyse. Il oriente les pistes de résolution et les escalades proposées par IMV.
 

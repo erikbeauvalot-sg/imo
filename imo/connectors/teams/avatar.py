@@ -12,12 +12,13 @@ from pathlib import Path
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
 WIDTH, HEIGHT = 640, 360  # 16:9, format des vignettes Teams
+DEFAULT_LABEL = "IMV · Assistant IM"
 
 
 SCALE = 3  # dessin en 3x puis réduction : bords lissés (Pillow ne lisse pas les formes)
 
 
-def draw_default_avatar() -> Image.Image:
+def draw_default_avatar(label: str = DEFAULT_LABEL) -> Image.Image:
     """Robot souriant avec casque-micro d'assistant, halo et ombre, et le nom de l'agent."""
     w, h, s = WIDTH * SCALE, HEIGHT * SCALE, SCALE
 
@@ -77,7 +78,7 @@ def draw_default_avatar() -> Image.Image:
 
     # Nom de l'agent dans une pastille
     font = ImageFont.load_default(size=26 * s)
-    label = "IMV · Assistant IM"
+    label = label.replace(" - ", " · ")
     tw = draw.textlength(label, font=font) / s
     pill = Image.new("L", (w, h))
     ImageDraw.Draw(pill).rounded_rectangle(box(cx - tw / 2 - 22, 278, cx + tw / 2 + 22, 322), radius=22 * s, fill=70)
@@ -117,8 +118,8 @@ def media_dir() -> Path:
     return _media_dir
 
 
-def avatar_video(source: Path | None = None) -> Path:
-    """Fichier Y4M de l'avatar : `source` (PNG, JPEG…) ou le robot par défaut."""
-    image = fit(Image.open(source)) if source else draw_default_avatar()
+def avatar_video(source: Path | None = None, label: str | None = None) -> Path:
+    """Fichier Y4M de l'avatar : `source` (PNG, JPEG…) ou le robot par défaut, avec `label` (nom de l'agent)."""
+    image = fit(Image.open(source)) if source else draw_default_avatar(label or DEFAULT_LABEL)
     digest = hashlib.sha256(image.tobytes()).hexdigest()[:12]
     return to_y4m(image, media_dir() / f"avatar-{digest}.y4m")

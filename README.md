@@ -32,13 +32,13 @@ Si `playwright install chromium` échoue (proxy ou filtrage du réseau d'entrepr
 .venv/bin/python imo_agent.py join "<url de la réunion>"
 ```
 
-1. Un navigateur Chromium s'ouvre et rejoint la réunion sous le nom « IMV - Assistant IM », sans caméra ni micro.
+1. Un navigateur Chromium s'ouvre et rejoint la réunion sous un nom tiré au hasard, « IMV - » suivi d'un nom d'étoile (« IMV - Nova », « IMV - Orion »…), sans caméra ni micro. Plusieurs agents dans une même réunion restent ainsi distincts. `--name` ou `IMV_NAME` dans `.env` impose un nom.
 2. Un participant doit **l'admettre depuis la salle d'attente**.
 3. L'agent ouvre le chat et y poste un **message d'accueil** qui annonce l'enregistrement (si le chat est ouvert aux invités).
 4. Chaque message s'affiche dans la console et est enregistré dans la base SQLite `sessions/imv.db`.
 5. `Ctrl+C` pour quitter la réunion.
 
-Options : `--im NOM` (responsable d'IMV, voir « Qui peut utiliser les commandes »), `--name` (nom affiché : lettres, chiffres, espaces et `- ' . _ @` uniquement), `--incident INC…`, `--no-welcome`, `--avatar [IMAGE]` (caméra allumée avec le robot IMV, ou votre image PNG/JPEG : un invité n'a pas de photo de profil), `--db`, `--out` (copie JSONL), `--headless`, `--admission-timeout`, `--debug-dir`, `-v`.
+Options : `--context FICHIER` (défaut : `contexte.md` du répertoire courant s'il existe), `--im NOM` (responsable d'IMV, voir « Qui peut utiliser les commandes »), `--name` (nom affiché : lettres, chiffres, espaces et `- ' . _ @` uniquement), `--incident INC…`, `--no-welcome`, `--avatar [IMAGE]` (caméra allumée avec le robot IMV, ou votre image PNG/JPEG : un invité n'a pas de photo de profil), `--db`, `--out` (copie JSONL), `--headless`, `--admission-timeout`, `--debug-dir`, `-v`.
 
 ### Commandes dans le chat
 
@@ -88,10 +88,10 @@ Les commandes d'analyse demandent l'option `--llm` (voir ci-dessous). Si le chat
 
 Les variables peuvent être dans l'environnement ou dans un fichier `.env` du répertoire courant (modèle : `.env.example` ; l'environnement est prioritaire). `python imo_agent.py check-llm --llm foundry` vérifie la connexion. `--llm-model` change le modèle. Les mots de passe et jetons repérés dans le chat sont masqués avant l'envoi au LLM. Avec `claude-cli`, le contenu du chat part vers votre compte Claude personnel : réservez-le à des réunions de test tant que le RSSI n'a pas validé.
 
-IMV n'est pas qu'un secrétaire : il aide à résoudre avec son expertise (exploitation, réseau, bases de données, cloud…), qu'il présente toujours comme des « pistes », distinctes des faits tirés du chat. Pour des pistes adaptées à votre SI, décrivez-le dans un fichier de contexte (applications, architecture, équipes, escalades, incidents connus) : copiez `contexte.exemple.md` en `contexte.md` (non versionné), puis `--context contexte.md` ou `IMV_CONTEXT=contexte.md` dans `.env`. Ce fichier part au LLM avec chaque analyse : aucun secret dedans.
+IMV n'est pas qu'un secrétaire : il aide à résoudre avec son expertise (exploitation, réseau, bases de données, cloud…), qu'il présente toujours comme des « pistes », distinctes des faits tirés du chat. Pour des pistes adaptées à votre SI, décrivez-le dans un fichier de contexte (applications, architecture, équipes, escalades, incidents connus) : copiez `contexte.exemple.md` en `contexte.md` (non versionné), il est alors chargé automatiquement depuis le répertoire courant ; un autre fichier se choisit avec `--context` ou `IMV_CONTEXT` dans `.env`. Ce fichier part au LLM avec chaque analyse : aucun secret dedans.
 
 ```bash
-python imo_agent.py join "<url>" --llm claude-cli --context contexte.md
+python imo_agent.py join "<url>" --llm claude-cli      # charge contexte.md s'il existe
 python imo_agent.py analyze 5 resume --llm ollama      # rejoue une analyse sur une session enregistrée
 ```
 

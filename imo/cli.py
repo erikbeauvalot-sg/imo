@@ -6,6 +6,7 @@ import argparse
 import asyncio
 import logging
 import os
+import random
 import signal
 import sys
 from pathlib import Path
@@ -22,7 +23,10 @@ from imo.models import ChatMessage
 from imo.sinks import ConsoleSink, JsonlSink, MultiSink
 from imo.storage import Store
 
-DEFAULT_NAME = "IMV - Assistant IM"
+# Nom tiré au hasard : plusieurs agents dans une même réunion restent distincts. Le préfixe
+# « IMV - » signale un robot ; des noms d'étoiles plutôt que des prénoms de vraies personnes.
+AGENT_NAMES = ("Altair", "Atlas", "Castor", "Deneb", "Lyra", "Nova", "Orion", "Rigel", "Sirius", "Vega")
+DEFAULT_CONTEXT = Path("contexte.md")
 DEFAULT_DB = Path("sessions") / "imv.db"
 
 
@@ -32,7 +36,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     join = sub.add_parser("join", help="Rejoindre une réunion Teams et lire le chat")
     join.add_argument("url", help="URL de la réunion Teams")
-    join.add_argument("--name", default=DEFAULT_NAME, help=f"Nom affiché (défaut : {DEFAULT_NAME!r})")
+    join.add_argument(
+        "--name",
+        default=os.environ.get("IMV_NAME") or None,
+        help="Nom affiché (défaut : $IMV_NAME, sinon « IMV - » suivi d'un nom tiré au hasard : "
+        + ", ".join(AGENT_NAMES) + ")",
+    )
     join.add_argument("--incident", help="Référence de l'incident (sinon : « imv démarrer <ID> » dans le chat)")
     join.add_argument(
         "--im",
@@ -82,6 +91,17 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def random_agent_name() -> str:
+    return f"IMV - {random.choice(AGENT_NAMES)}"
+
+
+def resolve_context_path(path: Path | None) -> Path | None:
+    """--context ou $IMV_CONTEXT, sinon contexte.md du répertoire courant s'il existe."""
+    if path is not None:
+        return path
+    return DEFAULT_CONTEXT if DEFAULT_CONTEXT.is_file() else None
+
+
 def _add_llm_arguments(parser: argparse.ArgumentParser, *, required: bool, context: bool = True) -> None:
     parser.add_argument(
         "--llm",
@@ -101,28 +121,30 @@ def _add_llm_arguments(parser: argparse.ArgumentParser, *, required: bool, conte
         default=os.environ.get("IMV_CONTEXT") or None,
         metavar="FICHIER",
         help="Contexte de l'entreprise pour le LLM : applications, équipes, escalades… "
-        "(défaut : $IMV_CONTEXT ; modèle : contexte.exemple.md)",
+        f"(défaut : $IMV_CONTEXT, sinon {DEFAULT_CONTEXT} s'il existe ; modèle : contexte.exemple.md)",
     )
 
 
 async def run_join(args: argparse.Namespace) -> int:
     log = logging.getLogger("imo")
     sinks = [ConsoleSink()] + ([JsonlSink(args.out)] if args.out else [])
+    name = args.name or random_agent_name()
     camera_video = None
     if args.avatar:
-        camera_video = avatar_video(None if args.avatar == "robot" else Path(args.avatar))
+        camera_video = avatar_video(None if args.avatar == "robot" else Path(args.avatar), label=name)
     session = TeamsSession(
         args.url,
-        args.name,
+        name,
         headless=args.headless,
         debug_dir=args.debug_dir,
         camera_video=camera_video,
         browser=args.browser,
     )
     llm = make_llm(args.llm, args.llm_model) if args.llm else None
-    context = load_context(args.context) if llm else None
+    context_path = resolve_context_path(args.context)
+    context = load_context(context_path) if llm else None
     if llm:
-        log.info("Analyses avec %s%s", llm.name, f", contexte : {args.context}" if context else "")
+        log.info("Analyses avec %s%s", llm.name, f", contexte : {context_path}" if context else "")
     store = Store(args.db)
     session_id = store.create_session(session.url, session.display_name)
 
@@ -206,7 +228,7 @@ async def run_analyze(args: argparse.Namespace) -> int:
         print(f"Aucune base : {args.db}", file=sys.stderr)
         return 1
     llm = make_llm(args.llm, args.llm_model)
-    context = load_context(args.context)
+    context = load_context(resolve_context_path(args.context))
     store = Store(args.db)
     try:
         messages = store.messages(args.session)
