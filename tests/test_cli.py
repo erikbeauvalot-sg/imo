@@ -32,3 +32,9 @@ def test_name_and_context_options(monkeypatch):
     assert args.name is None and args.context is None
     args = build_parser().parse_args(["join", "https://teams.microsoft.com/meet/1", "--name", "IMV - Test"])
     assert args.name == "IMV - Test"
+
+
+def test_browser_hidden_by_default():
+    args = build_parser().parse_args(["join", "https://teams.microsoft.com/meet/1"])
+    assert not args.show
+    assert build_parser().parse_args(["join", "https://teams.microsoft.com/meet/1", "--show"]).show

@@ -315,3 +315,51 @@ def test_valid_meeting_urls(url):
 def test_invalid_meeting_urls(url):
     with pytest.raises(ValueError):
         validate_meeting_url(url)
+
+
+def test_captions_become_transcript_messages():
+    async def scenario():
+        session = await _session("?lobby=100")
+        received: list[ChatMessage] = []
+        try:
+            await session.join(admission_timeout=10)
+            assert await session.enable_captions(timeout=5) is True
+            await session.page.evaluate("window.__imvCaptionsStableMs = 600")
+            await session.read_captions(received.append)
+            page = session.page
+            # Phrase qui s'allonge pendant qu'Alice parle : publiée une fois stable
+            await page.evaluate("caption(1, 'Alice Martin', 'Le site')")
+            await asyncio.sleep(0.3)
+            await page.evaluate("caption(1, 'Alice Martin', 'Le site renvoie des erreurs 500')")
+            await _wait_for(lambda: len(received) == 1)
+            # La même ligne s'allonge encore : seule la suite est publiée
+            await page.evaluate("caption(1, 'Alice Martin', 'Le site renvoie des erreurs 500 depuis midi')")
+            # Ligne retirée de l'écran avant d'être stable : publiée quand même
+            await page.evaluate("caption(2, 'Bob Durand', 'Je regarde les logs')")
+            await asyncio.sleep(0.1)
+            await page.evaluate("removeCaption(2)")
+            await _wait_for(lambda: len(received) == 3)
+            await asyncio.sleep(1)  # aucune publication en double
+            return received, await session.captions_state()
+        finally:
+            await session.close()
+
+    received, state = asyncio.run(scenario())
+    assert [(m.sender, m.text, m.source) for m in received] == [
+        ("Alice Martin", "Le site renvoie des erreurs 500", "transcript"),
+        ("Bob Durand", "Je regarde les logs", "transcript"),
+        ("Alice Martin", "depuis midi", "transcript"),
+    ]
+    assert state["matchedContainer"] == '[data-tid="closed-captions-renderer"]'
+
+
+def test_captions_unavailable():
+    async def scenario():
+        session = await _session("?lobby=100&nocaptions=1")
+        try:
+            await session.join(admission_timeout=10)
+            return await session.enable_captions(timeout=2)
+        finally:
+            await session.close()
+
+    assert asyncio.run(scenario()) is False

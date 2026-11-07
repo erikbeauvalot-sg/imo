@@ -52,6 +52,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     join.add_argument("--no-welcome", action="store_true", help="Ne pas poster le message d'accueil")
     join.add_argument(
+        "--captions",
+        action="store_true",
+        help="Transcrire la voix en lisant les sous-titres en direct de Teams (prototype)",
+    )
+    join.add_argument(
         "--avatar",
         nargs="?",
         const="robot",
@@ -61,7 +66,8 @@ def build_parser() -> argparse.ArgumentParser:
     _add_llm_arguments(join, required=False)
     join.add_argument("--db", type=Path, default=DEFAULT_DB, help=f"Base SQLite (défaut : {DEFAULT_DB})")
     join.add_argument("--out", type=Path, help="Copie des messages dans un fichier JSONL")
-    join.add_argument("--headless", action="store_true", help="Navigateur invisible")
+    join.add_argument("--show", action="store_true", help="Afficher la fenêtre du navigateur (diagnostic)")
+    join.add_argument("--headless", action="store_true", help=argparse.SUPPRESS)  # ancien nom, c'est le défaut
     join.add_argument(
         "--browser",
         choices=("chromium", "chrome", "msedge"),
@@ -135,7 +141,7 @@ async def run_join(args: argparse.Namespace) -> int:
     session = TeamsSession(
         args.url,
         name,
-        headless=args.headless,
+        headless=not args.show,
         debug_dir=args.debug_dir,
         camera_video=camera_video,
         browser=args.browser,
@@ -161,16 +167,19 @@ async def run_join(args: argparse.Namespace) -> int:
                 await session.open_chat()
             except TeamsJoinError as exc:
                 log.error("Connexion impossible — %s", exc)
+                if not args.show:
+                    log.info("Pour voir ce qui se passe dans le navigateur, relancez avec --show")
                 store.set_session_status(session_id, "failed", exc.code)
                 return 2
 
-            first_message = _FirstMessageSink()
+            first_message = _FirstMessageSink("chat")
+            first_caption = _FirstMessageSink("transcript")
             agent = IncidentAgent(
                 store,
                 session_id,
                 session.display_name,
                 session.send_chat,
-                sink=MultiSink(*sinks, first_message),
+                sink=MultiSink(*sinks, first_message, first_caption),
                 llm=llm,
                 context=context,
                 managers=args.im or [n for n in [os.environ.get("IMV_IM", "")] if n.strip()],
@@ -180,16 +189,23 @@ async def run_join(args: argparse.Namespace) -> int:
             queue: asyncio.Queue[ChatMessage] = asyncio.Queue()
             # Lecteur installé avant l'accueil : les messages déjà présents sont marqués « backlog ».
             await session.read_chat(queue.put_nowait)
+            # Sous-titres activés avant l'accueil, qui annonce alors la transcription de la voix.
+            if args.captions and await session.enable_captions():
+                await session.read_captions(queue.put_nowait)
+                agent.transcribing = True
             if not args.no_welcome:
                 await agent.welcome()
             worker = asyncio.create_task(agent.consume(queue))
-            snapshot_task = asyncio.create_task(_snapshot_after_first_message(session, first_message))
+            snapshot_tasks = [
+                asyncio.create_task(_snapshot_after_first_message(session, first_message, "chat")),
+                asyncio.create_task(_snapshot_after_first_message(session, first_caption, "captions")),
+            ]
             log.info("Lecture du chat en cours → %s, session %s (Ctrl+C pour quitter)", args.db, session_id)
 
             ended = asyncio.create_task(session.wait_until_ended())
             stopped = asyncio.create_task(stop.wait())
             done, pending = await asyncio.wait({ended, stopped}, return_when=asyncio.FIRST_COMPLETED)
-            for task in (*pending, snapshot_task):
+            for task in (*pending, *snapshot_tasks):
                 task.cancel()
             # Prototype : HTML du chat conservé pour ajuster les sélecteurs (contient les messages).
             await session.snapshot("chat-end")
@@ -208,19 +224,20 @@ async def run_join(args: argparse.Namespace) -> int:
 
 
 class _FirstMessageSink:
-    def __init__(self) -> None:
+    def __init__(self, source: str) -> None:
+        self.source = source
         self.received = asyncio.Event()
 
     def write(self, message: ChatMessage) -> None:
-        if message.source == "chat" and not message.backlog:
+        if message.source == self.source and not message.backlog:
             self.received.set()
 
 
-async def _snapshot_after_first_message(session: TeamsSession, first: _FirstMessageSink) -> None:
-    """Prototype : capture du chat peu après le premier message, même si la fenêtre est fermée ensuite."""
+async def _snapshot_after_first_message(session: TeamsSession, first: _FirstMessageSink, label: str) -> None:
+    """Prototype : capture peu après le premier message (chat ou sous-titre), même si la fenêtre est fermée ensuite."""
     await first.received.wait()
     await asyncio.sleep(3)
-    await session.snapshot("chat")
+    await session.snapshot(label)
 
 
 async def run_analyze(args: argparse.Namespace) -> int:

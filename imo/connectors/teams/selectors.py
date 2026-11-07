@@ -111,6 +111,35 @@ CHAT_INPUT = [
     'div[role="textbox"][contenteditable="true"]',
 ]
 
+# Sous-titres en direct : menu « More » → « Language and speech » → « Turn on live captions ».
+# Sélecteurs à confirmer sur le vrai Teams (captures « captions-* » du dossier debug).
+MORE_BUTTON = [
+    'button[id="callingButtons-showMoreBtn"]',
+    'button[data-tid="more-button"]',
+    'button[aria-label="More"]',
+    'button[aria-label="More actions"]',
+    '[role="toolbar"] button[aria-label*="More"]',
+]
+LANGUAGE_SPEECH_MENU = [
+    '[data-tid="LanguageSpeechMenuControl-id"]',
+    '[role="menuitem"]:has-text("Language and speech")',
+    'button:has-text("Language and speech")',
+]
+CAPTIONS_ON = [
+    '[data-tid="closed-captions-button"]',
+    '[role="menuitem"]:has-text("Turn on live captions")',
+    '[role="menuitemcheckbox"]:has-text("Live captions")',
+    '[role="menuitem"]:has-text("Show live captions")',
+    'button:has-text("Turn on live captions")',
+    '[role="menuitem"]:has-text("Captions")',
+]
+# Zone des sous-titres, présente une fois activés (la lecture est dans captions_reader.js)
+CAPTIONS_CONTAINER = [
+    '[data-tid="closed-captions-renderer"]',
+    '[data-tid="closed-caption-v2-window-wrapper"]',
+    '[data-tid*="closed-caption"]',
+]
+
 # Messages d'événement affichés par Teams dans le chat (expressions régulières,
 # insensibles à la casse) : enregistrés avec source="system", jamais pris pour des commandes.
 SYSTEM_MESSAGES = [

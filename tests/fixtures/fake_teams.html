@@ -59,13 +59,47 @@
     app.innerHTML = `
       <div role="toolbar">
         <button id="chat-button" aria-label="Chat">Chat</button>
+        <button id="callingButtons-showMoreBtn" aria-label="More">More</button>
         <button id="hangup-button" aria-label="Leave">Leave</button>
       </div>
+      <div id="menu"></div>
+      <div id="captions"></div>
       <div id="pane"></div>`;
+    document.getElementById('callingButtons-showMoreBtn').onclick = openMoreMenu;
     document.getElementById('hangup-button').onclick = () => { window.left = true; app.innerHTML = '<p>You left</p>'; };
     document.getElementById('chat-button').onclick = openChat;
     if (endAfter) setTimeout(() => { app.innerHTML = '<p>Meeting ended</p>'; }, endAfter);
   }
+
+  // Sous-titres : More → Language and speech → Turn on live captions (absents avec ?nocaptions=1)
+  function openMoreMenu() {
+    const menu = document.getElementById('menu');
+    menu.innerHTML = params.get('nocaptions') ? '<div role="menu"><div role="menuitem">Settings</div></div>' :
+      '<div role="menu"><div role="menuitem" data-tid="LanguageSpeechMenuControl-id">Language and speech</div></div>';
+    const speech = menu.querySelector('[data-tid="LanguageSpeechMenuControl-id"]');
+    if (speech) speech.onclick = () => {
+      menu.innerHTML = '<div role="menu"><div role="menuitem">Turn on live captions</div></div>';
+      menu.querySelector('[role="menuitem"]').onclick = () => {
+        menu.innerHTML = '';
+        document.getElementById('captions').innerHTML = '<div data-tid="closed-captions-renderer"></div>';
+      };
+    };
+  }
+  // Comme Teams : une ligne par prise de parole, dont le texte s'allonge pendant qu'on parle.
+  window.caption = (id, author, text) => {
+    const renderer = document.querySelector('[data-tid="closed-captions-renderer"]');
+    let item = document.getElementById(`cap-${id}`);
+    if (!item) {
+      item = document.createElement('div');
+      item.className = 'fui-ChatMessageCompact';
+      item.id = `cap-${id}`;
+      item.innerHTML = `<span data-tid="author"></span><span data-tid="closed-caption-text"></span>`;
+      item.firstChild.textContent = author;
+      renderer.appendChild(item);
+    }
+    item.lastChild.textContent = text;
+  };
+  window.removeCaption = (id) => document.getElementById(`cap-${id}`).remove();
 
   let list;
   let ownCount = 0;
