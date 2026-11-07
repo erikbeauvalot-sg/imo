@@ -10,10 +10,12 @@ dependencies = [
     "azure-identity>=1.19",
     "python-dotenv>=1.0",
     "pillow>=10.1",
+    "fastapi>=0.115",
+    "uvicorn>=0.30",
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8"]
+dev = ["pytest>=8", "httpx>=0.27"]
 
 [project.scripts]
 imo-agent = "imo.cli:main"
@@ -26,6 +28,7 @@ build-backend = "setuptools.build_meta"
 include = ["imo*"]
 
 [tool.setuptools.package-data]
+"imo" = ["*.html"]
 "imo.connectors.teams" = ["*.js"]
 
 [tool.pytest.ini_options]

@@ -1,0 +1,207 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>IMV — agents en réunion</title>
+<style>
+  :root {
+    --bg: #f4f6fa; --panel: #ffffff; --text: #1d2433; --muted: #667085; --line: #e3e7ef;
+    --accent: #1f6feb; --accent-text: #ffffff; --ok: #1a7f37; --warn: #9a6700; --bad: #cf222e;
+    --oral: #f1f5ff; --agent: #effaf3; --chip: #eef1f6;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f141c; --panel: #171d27; --text: #e6e9ef; --muted: #98a2b3; --line: #2a3240;
+      --accent: #4c8dff; --accent-text: #0b1020; --ok: #4ac26b; --warn: #d4a72c; --bad: #ff6b6b;
+      --oral: #1b2436; --agent: #16261d; --chip: #222a37;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  header { padding: 14px 20px; border-bottom: 1px solid var(--line); background: var(--panel); display: flex; align-items: baseline; gap: 12px; }
+  header h1 { margin: 0; font-size: 18px; }
+  header span { color: var(--muted); }
+  main { display: grid; grid-template-columns: 360px 1fr; gap: 16px; padding: 16px 20px; max-width: 1400px; margin: 0 auto; }
+  @media (max-width: 860px) { main { grid-template-columns: 1fr; padding: 12px 16px; } }
+  section { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px; min-width: 0; }
+  h2 { margin: 0 0 10px; font-size: 15px; }
+  label { display: block; margin: 8px 0 3px; color: var(--muted); font-size: 12px; }
+  input[type=text], input[type=url], select { width: 100%; padding: 7px 9px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--text); font: inherit; }
+  .checks { display: flex; flex-wrap: wrap; gap: 6px 14px; margin-top: 10px; }
+  .checks label { display: flex; gap: 6px; align-items: center; margin: 0; color: var(--text); font-size: 13px; }
+  button { white-space: nowrap; padding: 7px 14px; border-radius: 6px; border: 1px solid var(--accent); background: var(--accent); color: var(--accent-text); font: inherit; cursor: pointer; }
+  button.secondary { background: transparent; color: var(--bad); border-color: var(--bad); }
+  button:disabled { opacity: .5; cursor: default; }
+  .row { display: flex; gap: 8px; align-items: center; justify-content: space-between; margin-top: 12px; }
+  .error { color: var(--bad); font-size: 13px; margin-top: 8px; white-space: pre-wrap; }
+  .hint { color: var(--muted); font-size: 12px; margin-top: 6px; }
+  .list { display: flex; flex-direction: column; gap: 6px; margin-top: 4px; }
+  .item { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; cursor: pointer; }
+  .item.selected { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
+  .item .top { display: flex; justify-content: space-between; gap: 8px; }
+  .item .url { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .status { font-size: 12px; font-weight: 600; white-space: nowrap; }
+  .s-joining { color: var(--warn); } .s-in_meeting { color: var(--ok); } .s-ended { color: var(--muted); } .s-failed { color: var(--bad); }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0 10px; }
+  .chip { background: var(--chip); border-radius: 999px; padding: 2px 9px; font-size: 12px; }
+  .feed { height: 52vh; overflow-y: auto; border: 1px solid var(--line); border-radius: 8px; padding: 8px; display: flex; flex-direction: column; gap: 4px; }
+  .msg { padding: 5px 8px; border-radius: 6px; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .msg .meta { color: var(--muted); font-size: 12px; margin-right: 6px; }
+  .msg .who { font-weight: 600; margin-right: 4px; }
+  .msg.transcript { background: var(--oral); }
+  .msg.agent, .msg.agent-undelivered { background: var(--agent); }
+  .msg.system { color: var(--muted); font-style: italic; }
+  details { margin-top: 10px; }
+  summary { cursor: pointer; color: var(--muted); }
+  pre.events { max-height: 22vh; overflow: auto; font-size: 12px; background: var(--bg); padding: 8px; border-radius: 6px; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .empty { color: var(--muted); padding: 20px 0; text-align: center; }
+</style>
+</head>
+<body>
+<header><h1>IMV</h1><span>Agents en réunion — serveur local</span></header>
+<main>
+  <div style="display:flex;flex-direction:column;gap:16px;min-width:0">
+    <section>
+      <h2>Nouvel agent</h2>
+      <form id="form">
+        <label for="url">Lien de la réunion Teams</label>
+        <input id="url" type="url" required placeholder="https://teams.microsoft.com/…">
+        <label for="name">Nom affiché</label>
+        <input id="name" type="text" placeholder="Tiré au hasard">
+        <label for="im">Responsable(s) d'IMV, séparés par des virgules</label>
+        <input id="im" type="text" placeholder="La première personne qui tape une commande">
+        <label for="incident">Référence de l'incident</label>
+        <input id="incident" type="text" placeholder="Facultatif">
+        <label for="llm">Analyses LLM</label>
+        <select id="llm"></select>
+        <div class="checks">
+          <label><input id="captions" type="checkbox"> Transcrire la voix</label>
+          <label><input id="avatar" type="checkbox"> Avatar</label>
+          <label><input id="welcome" type="checkbox" checked> Message d'accueil</label>
+        </div>
+        <div class="row"><span class="hint" id="context"></span><button id="submit">Lancer</button></div>
+        <div class="error" id="form-error"></div>
+      </form>
+    </section>
+    <section>
+      <h2>Réunions</h2>
+      <div class="list" id="list"><div class="empty">Aucun agent lancé.</div></div>
+    </section>
+  </div>
+  <section id="detail"><div class="empty">Sélectionnez une réunion.</div></section>
+</main>
+<script>
+const STATUS = { joining: "Connexion…", in_meeting: "En réunion", ended: "Terminée", failed: "Échec" };
+let selected = null;
+
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const hour = (iso) => new Date(iso).toLocaleTimeString("fr-FR");
+const statusLabel = (m) => m.stopping ? "Arrêt…" : STATUS[m.status] || m.status;
+
+async function api(path, options = {}) {
+  const res = await fetch(path, { headers: { "Content-Type": "application/json" }, ...options });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(typeof body.detail === "string" ? body.detail : JSON.stringify(body.detail || body));
+  return body;
+}
+
+async function loadOptions() {
+  const o = await api("/api/options");
+  $("llm").innerHTML = `<option value="">Aucune</option>` +
+    o.providers.map((p) => `<option value="${esc(p)}"${p === o.llm ? " selected" : ""}>${esc(p)}</option>`).join("");
+  $("context").textContent = o.context ? `Contexte : ${o.context}` : "Pas de contexte.md";
+  if (o.im) $("im").placeholder = o.im;
+}
+
+$("form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  $("form-error").textContent = "";
+  $("submit").disabled = true;
+  try {
+    const m = await api("/api/meetings", {
+      method: "POST",
+      body: JSON.stringify({
+        url: $("url").value.trim(),
+        name: $("name").value.trim() || null,
+        im: $("im").value.split(",").map((s) => s.trim()).filter(Boolean),
+        incident: $("incident").value.trim() || null,
+        llm: $("llm").value,
+        captions: $("captions").checked,
+        avatar: $("avatar").checked,
+        welcome: $("welcome").checked,
+      }),
+    });
+    $("url").value = "";
+    selected = m.id;
+    await refresh();
+  } catch (err) {
+    $("form-error").textContent = err.message;
+  } finally {
+    $("submit").disabled = false;
+  }
+});
+
+function renderList(meetings) {
+  if (!meetings.length) { $("list").innerHTML = `<div class="empty">Aucun agent lancé.</div>`; return; }
+  $("list").innerHTML = meetings.map((m) => `
+    <div class="item${m.id === selected ? " selected" : ""}" data-id="${m.id}">
+      <div class="top"><strong>#${m.id} ${esc(m.name)}</strong><span class="status s-${esc(m.status)}">${esc(statusLabel(m))}</span></div>
+      <div class="url">${esc(m.incident ? m.incident + " · " : "")}${esc(m.url)}</div>
+    </div>`).join("");
+  for (const el of $("list").querySelectorAll(".item")) {
+    el.onclick = () => { selected = Number(el.dataset.id); $("detail").innerHTML = ""; refresh(); };
+  }
+}
+
+function renderDetail(data) {
+  const m = data.meeting;
+  const chips = [
+    m.incident && `Incident ${m.incident}`,
+    m.llm ? `LLM ${m.llm}` : "Sans LLM",
+    m.transcribing ? "Voix transcrite" : m.captions && m.status === "in_meeting" && "Sous-titres indisponibles",
+    m.paused && "En pause",
+    m.managers.length ? `IM : ${m.managers.join(", ")}` : "IM : premier à taper une commande",
+    m.open_to_all && "Commandes ouvertes à tous",
+    `${m.messages} message(s)`,
+  ].filter(Boolean);
+  const active = (m.status === "joining" || m.status === "in_meeting") && !m.stopping;
+  const feedEl = $("feed");
+  const atBottom = !feedEl || feedEl.scrollHeight - feedEl.scrollTop - feedEl.clientHeight < 40;
+  const openEvents = $("events-box")?.open;
+
+  $("detail").innerHTML = `
+    <div class="row" style="margin-top:0">
+      <h2 style="margin:0">#${m.id} ${esc(m.name)} — <span class="status s-${esc(m.status)}">${esc(statusLabel(m))}</span></h2>
+      <button class="secondary" id="stop"${active ? "" : " disabled"}>Quitter la réunion</button>
+    </div>
+    <div class="url hint">${esc(m.url)}</div>
+    ${m.error ? `<div class="error">${esc(m.error)}</div>` : ""}
+    <div class="chips">${chips.map((c) => `<span class="chip">${esc(c)}</span>`).join("")}</div>
+    <div class="feed" id="feed">${data.feed.length ? data.feed.map((f) => `
+      <div class="msg ${esc(f.kind)}"><span class="meta">${esc(hour(f.time))}</span><span class="who">${esc(f.author)}${f.kind === "transcript" ? " (oral)" : ""}${f.kind === "agent-undelivered" ? " (non publié)" : ""}</span>${esc(f.text)}</div>`).join("")
+      : `<div class="empty">Pas encore de message.</div>`}</div>
+    <details id="events-box"${openEvents ? " open" : ""}><summary>Journal de l'agent</summary><pre class="events">${esc(data.events.join("\n")) || "—"}</pre></details>`;
+  $("stop").onclick = async () => { $("stop").disabled = true; await api(`/api/meetings/${m.id}`, { method: "DELETE" }); refresh(); };
+  // Défilement suivi tant que l'on est en bas du fil ; position conservée si l'on remonte lire.
+  $("feed").scrollTop = atBottom ? $("feed").scrollHeight : feedEl.scrollTop;
+}
+
+async function refresh() {
+  try {
+    const meetings = await api("/api/meetings");
+    if (selected === null && meetings.length) selected = meetings[0].id;
+    renderList(meetings);
+    if (selected !== null) renderDetail(await api(`/api/meetings/${selected}/feed`));
+  } catch (err) {
+    console.error(err);
+  }
+}
+
+loadOptions().catch((err) => { $("form-error").textContent = err.message; });
+refresh();
+setInterval(refresh, 2000);
+</script>
+</body>
+</html>

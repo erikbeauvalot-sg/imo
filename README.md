@@ -118,6 +118,20 @@ DNS/réseau avant la vérification des identifiants, pas nécessairement un refu
 d'authentification. Vérifier ensuite avec
 `python imo_agent.py check-llm --llm azure-openai`.
 
+### Serveur web local : plusieurs réunions à la fois
+
+```bash
+.venv/bin/python imo_agent.py serve --llm azure-openai    # puis ouvrir http://127.0.0.1:8765
+```
+
+La page permet de lancer un agent dans une réunion (lien, nom, responsables, incident, LLM, transcription de la voix, avatar), de suivre chaque réunion en direct (messages du chat, phrases dites à l'oral, réponses d'IMV, journal de l'agent) et de faire quitter la réunion à un agent. Chaque agent a son propre navigateur, caché ; tous partagent la même base (`--db`) et le même `contexte.md`.
+
+- Options : `--port` (défaut 8765), `--llm`/`--llm-model` (fournisseur proposé par défaut dans la page), `--context`, `--browser`, `--show`, `--admission-timeout`, `--debug-dir` (un sous-dossier `session-<n>` par réunion), `-v`.
+- Le serveur n'écoute que `127.0.0.1` et n'a pas d'authentification : il est réservé à votre poste.
+- Ctrl+C arrête le serveur ; chaque agent quitte alors sa réunion.
+- Comptez environ 300 à 500 Mo de mémoire par réunion.
+- API JSON, utilisable depuis un script : `POST /api/meetings` (`{"url": "...", "name": "...", "im": ["..."], "captions": true}`), `GET /api/meetings`, `GET /api/meetings/<id>/feed`, `DELETE /api/meetings/<id>`.
+
 ### Historique
 
 ```bash
