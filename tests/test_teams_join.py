@@ -101,9 +101,11 @@ def test_join_and_read_chat():
     assert received[3].sent_at == "2026-11-07T14:20:45+00:00"
 
 
-def test_agent_welcome_and_commands_in_chat():
+# chatDelay : panneau de chat lent à s'afficher, l'accueil doit quand même partir
+@pytest.mark.parametrize("query", ["?lobby=100", "?lobby=100&chatDelay=1500"])
+def test_agent_welcome_and_commands_in_chat(query):
     async def scenario():
-        session = await _session("?lobby=100")
+        session = await _session(query)
         store = Store(":memory:")
         try:
             await session.join(admission_timeout=10)
@@ -202,7 +204,7 @@ def test_send_chat_when_read_only():
         session = await _session("?lobby=100&readonly=1")
         try:
             await session.join(admission_timeout=10)
-            await session.open_chat()
+            await session.open_chat(input_timeout=1)
             return await session.send_chat("bonjour")
         finally:
             await session.close()

@@ -71,6 +71,11 @@
   let ownCount = 0;
   window.sent = [];
   function openChat() {
+    // Comme Teams sur un poste lent : le panneau n'apparaît qu'après un délai.
+    setTimeout(renderChat, Number(params.get('chatDelay') || 0));
+  }
+
+  function renderChat() {
     document.getElementById('pane').innerHTML =
       '<div data-tid="chat-pane-list"></div>' +
       (params.get('readonly') ? '' :

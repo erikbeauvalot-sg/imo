@@ -306,16 +306,25 @@ class TeamsSession:
 
     # -- chat -------------------------------------------------------------
 
-    async def open_chat(self, timeout: float = 15) -> None:
+    async def open_chat(self, timeout: float = 15, input_timeout: float = 10) -> None:
         page = self._require_page()
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             if await self._click_first(sel.CHAT_BUTTON):
+                break
+            await page.wait_for_timeout(500)
+        else:
+            await self.snapshot("chat-button-missing")
+            raise TeamsJoinError("chat_unavailable", "bouton du chat introuvable")
+        # Le panneau se charge après le clic, parfois en plusieurs secondes (poste lent, Edge) :
+        # sans cette attente, le message d'accueil part avant que la zone de saisie existe.
+        deadline = time.monotonic() + input_timeout
+        while time.monotonic() < deadline:
+            if await self._visible(sel.CHAT_INPUT):
                 log.info("Panneau de chat ouvert")
                 return
-            await page.wait_for_timeout(500)
-        await self.snapshot("chat-button-missing")
-        raise TeamsJoinError("chat_unavailable", "bouton du chat introuvable")
+            await page.wait_for_timeout(250)
+        log.warning("Panneau de chat ouvert, mais sans zone de saisie après %.0f s (chat en lecture seule ?)", input_timeout)
 
     async def read_chat(self, on_message: Callable[[ChatMessage], None]) -> None:
         """Installe le lecteur de chat ; `on_message` est appelé pour chaque nouveau message."""
