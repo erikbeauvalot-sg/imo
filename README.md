@@ -95,6 +95,15 @@ python imo_agent.py join "<url>" --llm claude-cli --context contexte.md
 python imo_agent.py analyze 5 resume --llm ollama      # rejoue une analyse sur une session enregistrée
 ```
 
+Sur le réseau d'entreprise, renseigner `HTTP_PROXY` et `HTTPS_PROXY` dans `.env` si
+Entra ID nécessite un proxy. Les SDK Azure et OpenAI lisent ces variables standard ;
+`PROXY_CONFIGURED` seul n'a aucun effet ici. Utiliser `NO_PROXY` pour les domaines
+internes à joindre directement (exemple : `localhost,127.0.0.1,::1,.socgen`).
+Une erreur `Failed to resolve 'login.microsoftonline.com'` indique un problème
+DNS/réseau avant la vérification des identifiants, pas nécessairement un refus
+d'authentification. Vérifier ensuite avec
+`python imo_agent.py check-llm --llm azure-openai`.
+
 ### Historique
 
 ```bash
