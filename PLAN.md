@@ -294,10 +294,10 @@ Objectif : l'agent exploite les messages captés pour proposer résumés, sugges
 | --- | --- | --- |
 | 2.1 | Choix du fournisseur LLM + validation sécurité/DPO | Décision écrite |
 | 2.2 | Ateliers IM : questions types, format attendu des résumés/rapports | Référentiel de questions v1 + gabarits validés |
-| 2.3 | Client LLM (retries, timeouts, métriques coût/latence, prompt caching, masquage des secrets) | Tests unitaires + métriques visibles |
+| 2.3 | Client LLM (retries, timeouts, métriques coût/latence, prompt caching, masquage des secrets) — **codé** : fournisseurs `claude-cli`, `foundry`, `anthropic`, `ollama` (`imo/llm/`) | Tests unitaires + métriques visibles |
 | 2.4 | Extracteur d'état incrémental (JSON validé par schéma) | État cohérent sur les scénarios de test |
-| 2.5 | Commandes `résumé`, `catchup`, `timeline`, `actions`, `statut` (chat + interface web) | Réponse < 15 s ; qualité ≥ 4/5 selon les IM |
-| 2.6 | Commande `questions` basée sur le référentiel | Questions pertinentes et non redondantes |
+| 2.5 | Commandes `résumé`, `catchup`, `timeline`, `actions`, `statut` (chat + interface web) — **codé** côté chat, sur le chat complet (`imo/analysis.py`) | Réponse < 15 s ; qualité ≥ 4/5 selon les IM |
+| 2.6 | Commande `questions` basée sur le référentiel — **codé** avec une liste de thèmes dans le prompt | Questions pertinentes et non redondantes |
 | 2.7 | Feedback 👍/👎 sur chaque réponse (interface web) | Feedback stocké |
 | 2.8 | Jeu de scénarios « incidents dorés » + harnais d'évaluation (cf. §8) | Évaluation exécutée en CI |
 
@@ -376,7 +376,8 @@ V2                                                                              
 │   ├── connectors/teams/      # connexion, sélecteurs, lecture et écriture du chat  (fait)
 │   ├── storage/               # SQLite (fait) → PostgreSQL                          (Étape 1)
 │   ├── web/                   # FastAPI + interface                                 (Étape 1)
-│   ├── llm/                   # client LLM, prompts, schémas de sortie              (Étape 2)
+│   ├── analysis.py            # prompts et commandes d'analyse                      (fait)
+│   ├── llm/                   # claude-cli, foundry, anthropic, ollama              (fait)
 │   ├── incident/              # état incident, extracteur, rapport                  (Étape 2)
 │   ├── proactive/             # moteur de règles                                    (Étape 2)
 │   └── audio/                 # capture audio + speech-to-text                      (V2)

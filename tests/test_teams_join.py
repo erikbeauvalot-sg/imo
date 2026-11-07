@@ -9,7 +9,7 @@ import pytest
 
 from imo.agent import WELCOME, IncidentAgent
 from imo.connectors.teams import TeamsJoinError, TeamsSession, validate_display_name
-from imo.connectors.teams.join import validate_meeting_url
+from imo.connectors.teams.join import disable_app_launch, validate_meeting_url
 from imo.models import ChatMessage
 from imo.storage import Store
 
@@ -18,7 +18,9 @@ MEETING_URL = "https://teams.microsoft.com/l/meetup-join/19%3ameeting_test%40thr
 
 
 async def _session(query: str = "", tmp_path: Path | None = None) -> TeamsSession:
-    session = TeamsSession(MEETING_URL + query, "IMV - Assistant IM", headless=True, debug_dir=tmp_path)
+    session = TeamsSession(
+        MEETING_URL + query, "IMV - Assistant IM", headless=True, debug_dir=tmp_path, resolve_launcher=False
+    )
     await session.start()
 
     async def serve_fixture(route):
@@ -179,6 +181,42 @@ def test_login_redirect_means_guests_not_allowed():
     with pytest.raises(TeamsJoinError) as exc:
         asyncio.run(scenario())
     assert exc.value.code == "login_required"
+
+
+def test_disable_app_launch():
+    # Redirection réelle d'un lien teams.microsoft.com/meet/... (novembre 2026)
+    launcher = (
+        "https://teams.microsoft.com/dl/launcher/launcher.html?url=%2F_%23%2Fmeet%2F344615604655081"
+        "%3Fp%3Dsecret%26anon%3Dtrue&type=meet&deeplinkId=d1e5&directDl=true&msLaunch=true&enableMobilePage=true"
+    )
+    rewritten = disable_app_launch(launcher)
+    assert "msLaunch=false" in rewritten and "suppressPrompt=true" in rewritten
+    # Le lien de la réunion, encodé dans « url », est conservé
+    assert "url=%2F_%23%2Fmeet%2F344615604655081%3Fp%3Dsecret%26anon%3Dtrue" in rewritten
+    assert disable_app_launch(rewritten) == rewritten
+    assert disable_app_launch(MEETING_URL) == MEETING_URL
+
+
+def test_launcher_navigation_is_rewritten():
+    async def scenario():
+        session = TeamsSession(MEETING_URL, "IMV - Assistant IM", headless=True, resolve_launcher=False)
+        await session.start()
+        try:
+            async def launcher_page(route):
+                await route.fulfill(status=200, content_type="text/html", body="<p>launcher</p>")
+
+            # La dernière route enregistrée passe en premier : la réécriture est réinstallée
+            # après la fausse page du lanceur, qui ne sert qu'en repli (route.fallback).
+            await session._context.route("https://teams.microsoft.com/dl/launcher/**", launcher_page)
+            await session._context.unroute("**/dl/launcher/launcher.html*")
+            await session._context.route("**/dl/launcher/launcher.html*", session._block_app_launch)
+            await session.page.goto("https://teams.microsoft.com/dl/launcher/launcher.html?url=x&msLaunch=true")
+            return session.page.url
+        finally:
+            await session.close()
+
+    url = asyncio.run(scenario())
+    assert "msLaunch=false" in url
 
 
 @pytest.mark.parametrize("name", ["IMV - Assistant IM", "Bot_IM.1", "Agent@IM", "Équipe IM"])

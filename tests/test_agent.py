@@ -7,6 +7,7 @@ import asyncio
 import pytest
 
 from imo.agent import HELP, WELCOME, Command, IncidentAgent, parse_command
+from imo.llm import LLMError
 from imo.models import ChatMessage
 from imo.storage import Store
 
@@ -45,11 +46,59 @@ class FakeChat:
         return self.writable
 
 
-def _agent(writable: bool = True) -> tuple[IncidentAgent, FakeChat, Store, int]:
+class FakeLLM:
+    name = "fake"
+
+    def __init__(self, error: bool = False) -> None:
+        self.error = error
+        self.prompts: list[str] = []
+
+    async def complete(self, system: str, prompt: str) -> str:
+        self.prompts.append(prompt)
+        await asyncio.sleep(0.05)
+        if self.error:
+            raise LLMError("quota atteint")
+        return "Symptômes : erreurs 500"
+
+
+def _agent(writable: bool = True, llm=None) -> tuple[IncidentAgent, FakeChat, Store, int]:
     store = Store(":memory:")
     session_id = store.create_session("https://teams.microsoft.com/meet/1", "IMV - Assistant IM")
     chat = FakeChat(writable)
-    return IncidentAgent(store, session_id, "IMV - Assistant IM", chat.send), chat, store, session_id
+    return IncidentAgent(store, session_id, "IMV - Assistant IM", chat.send, llm=llm), chat, store, session_id
+
+
+def test_analysis_command_runs_in_background():
+    async def scenario():
+        llm = FakeLLM()
+        agent, chat, store, sid = _agent(llm=llm)
+        await agent.handle(_msg("Alice", "Erreurs 500 sur le paiement", "m1"))
+        await agent.handle(_msg("Bob", "imv résumé", "m2"))
+        # L'analyse tourne en fond : les messages suivants sont enregistrés sans attendre
+        await agent.handle(_msg("Alice", "le LB est saturé", "m3"))
+        assert chat.sent == []
+        await agent.wait_analyses()
+        return chat, llm, store, sid
+
+    chat, llm, store, sid = asyncio.run(scenario())
+    assert chat.sent == ["Symptômes : erreurs 500"]
+    assert "Alice : Erreurs 500 sur le paiement" in llm.prompts[0]
+    assert store.count_messages(sid) == 3
+
+
+def test_analysis_error_and_missing_llm():
+    async def scenario():
+        agent, chat, _, _ = _agent(llm=FakeLLM(error=True))
+        await agent.handle(_msg("Alice", "Erreurs 500", "m1"))
+        await agent.handle(_msg("Bob", "imv timeline", "m2"))
+        await agent.wait_analyses()
+        no_llm, chat2, _, _ = _agent()
+        await no_llm.handle(_msg("Bob", "imv questions", "m1"))
+        return chat.sent, chat2.sent
+
+    with_error, without_llm = asyncio.run(scenario())
+    assert with_error == ["Analyse « timeline » impossible pour le moment (quota atteint)."]
+    assert "option --llm" in without_llm[0]
 
 
 def _msg(sender: str, text: str, mid: str | None = None, **kw) -> ChatMessage:
@@ -63,7 +112,7 @@ def test_commands_and_recording():
         await agent.handle(_msg("Bob", "imv démarrer INC0012345", "m2"))
         await agent.handle(_msg("Bob", "imv statut", "m3"))
         await agent.handle(_msg("Bob", "imv aide", "m4"))
-        await agent.handle(_msg("Bob", "imv timeline", "m5"))
+        await agent.handle(_msg("Bob", "imv clore", "m5"))
         await agent.handle(_msg("Bob", "imv xyz", "m6"))
         return chat, store, sid
 
@@ -72,13 +121,26 @@ def test_commands_and_recording():
     assert "messages enregistrés : 3" in chat.sent[1]
     assert chat.sent[2] == HELP
     assert "pas encore disponible" in chat.sent[3]
-    assert "Commande inconnue" in chat.sent[4]
+    assert "Commande inconnue" in chat.sent[4] and "Vouliez-vous" not in chat.sent[4]
 
     incident = store.session_incident(sid)
     assert incident["ref"] == "INC0012345" and incident["im_name"] == "Bob"
     # Les messages antérieurs à « démarrer » sont rattachés à l'incident
     assert {m["incident_id"] for m in store.messages(sid)} == {incident["id"]}
     assert len(store.interventions(sid)) == 5
+
+
+@pytest.mark.parametrize(
+    "typo, suggestion",
+    [("imv resmué", "imv résumé"), ("imv demarer INC1", "imv démarrer"), ("imv qestions", "imv questions")],
+)
+def test_typo_suggests_closest_command(typo, suggestion):
+    async def scenario():
+        agent, chat, _, _ = _agent()
+        await agent.handle(_msg("Bob", typo, "m1"))
+        return chat.sent[0]
+
+    assert f"Vouliez-vous dire « {suggestion} » ?" in asyncio.run(scenario())
 
 
 def test_start_twice_keeps_first_incident():

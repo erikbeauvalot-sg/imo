@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import difflib
 import logging
 import re
 import unicodedata
@@ -10,6 +11,8 @@ from collections import deque
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
+from imo.analysis import TASKS, analyze
+from imo.llm import LLM, LLMError
 from imo.models import ChatMessage
 from imo.sinks import Sink
 from imo.storage import Store
@@ -26,6 +29,11 @@ WELCOME = (
 HELP = (
     "Commandes IMV, à taper dans le chat :\n"
     "imv démarrer [ID incident] : démarre le suivi de l'incident\n"
+    "imv résumé : point de situation\n"
+    "imv catchup : résumé court pour un nouvel arrivant\n"
+    "imv questions : questions à poser maintenant\n"
+    "imv timeline : chronologie des événements\n"
+    "imv actions : actions identifiées et owners\n"
     "imv statut : état de l'agent\n"
     "imv pause / imv reprise : suspend / reprend l'enregistrement du chat\n"
     "imv aide : cette aide"
@@ -43,8 +51,10 @@ _ALIASES = {
     "statut": "statut",
     "status": "statut",
 }
-# Commandes prévues à l'Étape 2 (analyse) : reconnues, mais pas encore disponibles.
-_LATER = {"resume", "catchup", "questions", "timeline", "actions", "com", "clore"}
+# Commandes prévues plus tard : reconnues, mais pas encore disponibles.
+_LATER = {"com", "clore"}
+# Orthographe affichée des formes canoniques qui portent un accent.
+_DISPLAY = {"demarrer": "démarrer", "resume": "résumé"}
 
 _COMMAND = re.compile(r"^\s*imv\b[\s:,.!-]*(?P<word>\S*)\s*(?P<arg>.*)$", re.IGNORECASE | re.DOTALL)
 
@@ -86,13 +96,17 @@ class IncidentAgent:
         send: Callable[[str], Awaitable[bool]],
         *,
         sink: Sink | None = None,
+        llm: LLM | None = None,
     ) -> None:
         self.store = store
         self.session_id = session_id
         self.display_name = display_name
         self.send = send
         self.sink = sink
+        self.llm = llm
         self.paused = False
+        # Analyses en cours : exécutées en tâche de fond pour ne pas bloquer la lecture du chat.
+        self._analyses: set[asyncio.Task] = set()
         # Empreintes des messages envoyés, pour ne pas les relire comme des messages humains.
         self._own: deque[str] = deque(maxlen=50)
 
@@ -121,14 +135,44 @@ class IncidentAgent:
             await self.execute(command, msg.sender)
 
     async def execute(self, command: Command, author: str) -> None:
+        if command.verb in TASKS:
+            if self.llm is None:
+                await self.reply("L'analyse n'est pas activée pour cette session (option --llm).")
+                return
+            task = asyncio.create_task(self._analyze(command))
+            self._analyses.add(task)
+            task.add_done_callback(self._analyses.discard)
+            return
         handler = getattr(self, f"_cmd_{command.verb}", None)
         if handler is not None:
             text = handler(command.arg, author)
         elif command.verb in _LATER:
-            text = f"« imv {command.word} » n'est pas encore disponible : l'analyse arrive dans une prochaine version."
+            text = f"« imv {command.word} » n'est pas encore disponible."
         else:
-            text = f"Commande inconnue : « {command.word} ». Tapez « imv aide »."
+            text = f"Commande inconnue : « {command.word} »."
+            close = difflib.get_close_matches(command.verb, [*_ALIASES, *TASKS, *_LATER], n=1, cutoff=0.6)
+            if close:
+                verb = _ALIASES.get(close[0], close[0])
+                text += f" Vouliez-vous dire « imv {_DISPLAY.get(verb, verb)} » ?"
+            text += " Tapez « imv aide » pour la liste."
         await self.reply(text)
+
+    async def _analyze(self, command: Command) -> None:
+        assert self.llm is not None
+        incident = self.store.session_incident(self.session_id)
+        try:
+            text = await analyze(
+                self.llm, command.verb, self.store.messages(self.session_id), incident["ref"] if incident else None
+            )
+        except LLMError as exc:
+            log.error("Analyse « %s » impossible : %s", command.word, exc)
+            text = f"Analyse « {command.word} » impossible pour le moment ({exc})."
+        await self.reply(text or f"Analyse « {command.word} » : réponse vide.")
+
+    async def wait_analyses(self) -> None:
+        """Attend la fin des analyses en cours (fin de session, tests)."""
+        if self._analyses:
+            await asyncio.gather(*self._analyses, return_exceptions=True)
 
     async def reply(self, text: str, *, kind: str = "command") -> bool:
         fingerprint = _fingerprint(text)
