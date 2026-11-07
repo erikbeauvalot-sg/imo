@@ -4,8 +4,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from imo.cli import AGENT_NAMES, build_parser, random_agent_name, resolve_context_path
+from imo.cli import build_parser
 from imo.connectors.teams.join import validate_display_name
+from imo.runner import AGENT_NAMES, random_agent_name, resolve_context_path
 
 
 def test_random_agent_name_is_a_valid_display_name():

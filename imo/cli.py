@@ -1,4 +1,4 @@
-"""Ligne de commande : imo_agent.py join <url> | history [session]."""
+"""Ligne de commande : imo_agent.py join <url> | serve | history [session] | analyze | check-llm."""
 
 from __future__ import annotations
 
@@ -6,27 +6,20 @@ import argparse
 import asyncio
 import logging
 import os
-import random
 import signal
 import sys
 from pathlib import Path
 
 from dotenv import find_dotenv, load_dotenv
 
-from imo.agent import IncidentAgent
 from imo.analysis import TASKS, analyze, load_context
-from imo.connectors.teams import TeamsJoinError, TeamsSession
-from imo.connectors.teams.avatar import avatar_video
+from imo.connectors.teams import TeamsJoinError
 from imo.llm import PROVIDERS, LLMError, make_llm
 from imo.llm.providers import DEFAULT_MODELS
-from imo.models import ChatMessage
-from imo.sinks import ConsoleSink, JsonlSink, MultiSink
+from imo.runner import AGENT_NAMES, DEFAULT_CONTEXT, MeetingConfig, MeetingRunner, resolve_context_path
+from imo.sinks import ConsoleSink, JsonlSink
 from imo.storage import Store
 
-# Nom tiré au hasard : plusieurs agents dans une même réunion restent distincts. Le préfixe
-# « IMV - » signale un robot ; des noms d'étoiles plutôt que des prénoms de vraies personnes.
-AGENT_NAMES = ("Altair", "Atlas", "Castor", "Deneb", "Lyra", "Nova", "Orion", "Rigel", "Sirius", "Vega")
-DEFAULT_CONTEXT = Path("contexte.md")
 DEFAULT_DB = Path("sessions") / "imv.db"
 
 
@@ -79,6 +72,18 @@ def build_parser() -> argparse.ArgumentParser:
     join.add_argument("--debug-dir", type=Path, default=Path("debug"), help="Captures en cas d'échec")
     join.add_argument("-v", "--verbose", action="store_true")
 
+    serve = sub.add_parser("serve", help="Serveur web local : lancer et suivre plusieurs agents à la fois")
+    serve.add_argument("--port", type=int, default=8765, help="Port sur 127.0.0.1 (défaut : 8765)")
+    _add_llm_arguments(serve, required=False)
+    serve.add_argument("--db", type=Path, default=DEFAULT_DB, help=f"Base SQLite (défaut : {DEFAULT_DB})")
+    serve.add_argument("--show", action="store_true", help="Afficher les fenêtres des navigateurs (diagnostic)")
+    serve.add_argument(
+        "--browser", choices=("chromium", "chrome", "msedge"), default=os.environ.get("IMV_BROWSER") or None
+    )
+    serve.add_argument("--admission-timeout", type=float, default=600, help="Attente max. en salle d'attente (s)")
+    serve.add_argument("--debug-dir", type=Path, default=Path("debug"), help="Captures (un sous-dossier par session)")
+    serve.add_argument("-v", "--verbose", action="store_true")
+
     history = sub.add_parser("history", help="Sessions et messages enregistrés")
     history.add_argument("session", nargs="?", type=int, help="Numéro de session (sinon : liste des sessions)")
     history.add_argument("--db", type=Path, default=DEFAULT_DB)
@@ -95,17 +100,6 @@ def build_parser() -> argparse.ArgumentParser:
     _add_llm_arguments(check, required=True, context=False)
     check.add_argument("-v", "--verbose", action="store_true")
     return parser
-
-
-def random_agent_name() -> str:
-    return f"IMV - {random.choice(AGENT_NAMES)}"
-
-
-def resolve_context_path(path: Path | None) -> Path | None:
-    """--context ou $IMV_CONTEXT, sinon contexte.md du répertoire courant s'il existe."""
-    if path is not None:
-        return path
-    return DEFAULT_CONTEXT if DEFAULT_CONTEXT.is_file() else None
 
 
 def _add_llm_arguments(parser: argparse.ArgumentParser, *, required: bool, context: bool = True) -> None:
@@ -132,112 +126,55 @@ def _add_llm_arguments(parser: argparse.ArgumentParser, *, required: bool, conte
 
 
 async def run_join(args: argparse.Namespace) -> int:
-    log = logging.getLogger("imo")
-    sinks = [ConsoleSink()] + ([JsonlSink(args.out)] if args.out else [])
-    name = args.name or random_agent_name()
-    camera_video = None
-    if args.avatar:
-        camera_video = avatar_video(None if args.avatar == "robot" else Path(args.avatar), label=name)
-    session = TeamsSession(
-        args.url,
-        name,
-        headless=not args.show,
-        debug_dir=args.debug_dir,
-        camera_video=camera_video,
+    sinks = (ConsoleSink(),) + ((JsonlSink(args.out),) if args.out else ())
+    config = MeetingConfig(
+        url=args.url,
+        name=args.name,
+        incident=args.incident,
+        managers=args.im or [n for n in [os.environ.get("IMV_IM", "")] if n.strip()],
+        welcome=not args.no_welcome,
+        captions=args.captions,
+        avatar=args.avatar,
+        llm=args.llm,
+        llm_model=args.llm_model,
+        context=args.context,
+        show=args.show,
         browser=args.browser,
+        admission_timeout=args.admission_timeout,
+        debug_dir=args.debug_dir,
     )
-    llm = make_llm(args.llm, args.llm_model) if args.llm else None
-    context_path = resolve_context_path(args.context)
-    context = load_context(context_path) if llm else None
-    if llm:
-        log.info("Analyses avec %s%s", llm.name, f", contexte : {context_path}" if context else "")
     store = Store(args.db)
-    session_id = store.create_session(session.url, session.display_name)
-
-    stop = asyncio.Event()
-    loop = asyncio.get_running_loop()
-    for sig in (signal.SIGINT, signal.SIGTERM):
-        loop.add_signal_handler(sig, stop.set)
-
     try:
-        async with session:
-            try:
-                await session.join(admission_timeout=args.admission_timeout)
-                store.set_session_status(session_id, "in_meeting")
-                await session.open_chat()
-            except TeamsJoinError as exc:
-                log.error("Connexion impossible — %s", exc)
-                if not args.show:
-                    log.info("Pour voir ce qui se passe dans le navigateur, relancez avec --show")
-                store.set_session_status(session_id, "failed", exc.code)
-                return 2
-
-            first_message = _FirstMessageSink("chat")
-            first_caption = _FirstMessageSink("transcript")
-            agent = IncidentAgent(
-                store,
-                session_id,
-                session.display_name,
-                session.send_chat,
-                sink=MultiSink(*sinks, first_message, first_caption),
-                llm=llm,
-                context=context,
-                managers=args.im or [n for n in [os.environ.get("IMV_IM", "")] if n.strip()],
-            )
-            if args.incident:
-                agent.start_incident(args.incident)
-            queue: asyncio.Queue[ChatMessage] = asyncio.Queue()
-            # Lecteur installé avant l'accueil : les messages déjà présents sont marqués « backlog ».
-            await session.read_chat(queue.put_nowait)
-            # Sous-titres activés avant l'accueil, qui annonce alors la transcription de la voix.
-            if args.captions and await session.enable_captions():
-                await session.read_captions(queue.put_nowait)
-                agent.transcribing = True
-            if not args.no_welcome:
-                await agent.welcome()
-            worker = asyncio.create_task(agent.consume(queue))
-            snapshot_tasks = [
-                asyncio.create_task(_snapshot_after_first_message(session, first_message, "chat")),
-                asyncio.create_task(_snapshot_after_first_message(session, first_caption, "captions")),
-            ]
-            log.info("Lecture du chat en cours → %s, session %s (Ctrl+C pour quitter)", args.db, session_id)
-
-            ended = asyncio.create_task(session.wait_until_ended())
-            stopped = asyncio.create_task(stop.wait())
-            done, pending = await asyncio.wait({ended, stopped}, return_when=asyncio.FIRST_COMPLETED)
-            for task in (*pending, *snapshot_tasks):
-                task.cancel()
-            # Prototype : HTML du chat conservé pour ajuster les sélecteurs (contient les messages).
-            await session.snapshot("chat-end")
-            if ended in done:
-                log.info("Fin de session : %s", ended.result())
-            else:
-                await session.leave()
-            worker.cancel()
-            while not queue.empty():
-                await agent.handle(queue.get_nowait())
-            store.set_session_status(session_id, "ended")
-            log.info("Messages enregistrés : %s (session %s)", store.count_messages(session_id), session_id)
+        runner = MeetingRunner(config, store, sinks)
+        loop = asyncio.get_running_loop()
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            loop.add_signal_handler(sig, runner.stop)
+        logging.getLogger("imo").info("Base %s, session %s (Ctrl+C pour quitter)", args.db, runner.session_id)
+        return await runner.run()
     finally:
         store.close()
+
+
+async def run_serve(args: argparse.Namespace) -> int:
+    import uvicorn  # importé ici : inutile aux autres commandes
+
+    from imo.server import create_app
+
+    defaults = MeetingConfig(
+        url="",
+        llm=args.llm,
+        llm_model=args.llm_model,
+        context=args.context,
+        show=args.show,
+        browser=args.browser,
+        admission_timeout=args.admission_timeout,
+        debug_dir=args.debug_dir,
+    )
+    app = create_app(args.db, defaults)
+    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=args.port, log_level="warning"))
+    logging.getLogger("imo").info("IMV : http://127.0.0.1:%s (Ctrl+C pour arrêter)", args.port)
+    await server.serve()
     return 0
-
-
-class _FirstMessageSink:
-    def __init__(self, source: str) -> None:
-        self.source = source
-        self.received = asyncio.Event()
-
-    def write(self, message: ChatMessage) -> None:
-        if message.source == self.source and not message.backlog:
-            self.received.set()
-
-
-async def _snapshot_after_first_message(session: TeamsSession, first: _FirstMessageSink, label: str) -> None:
-    """Prototype : capture peu après le premier message (chat ou sous-titre), même si la fenêtre est fermée ensuite."""
-    await first.received.wait()
-    await asyncio.sleep(3)
-    await session.snapshot(label)
 
 
 async def run_analyze(args: argparse.Namespace) -> int:
@@ -299,7 +236,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     if args.command == "history":
         return run_history(args)
-    runner = {"join": run_join, "analyze": run_analyze, "check-llm": run_check_llm}.get(args.command)
+    runner = {"join": run_join, "serve": run_serve, "analyze": run_analyze, "check-llm": run_check_llm}.get(args.command)
     if runner is None:
         return 1
     try:
