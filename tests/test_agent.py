@@ -52,8 +52,10 @@ class FakeLLM:
     def __init__(self, error: bool = False) -> None:
         self.error = error
         self.prompts: list[str] = []
+        self.systems: list[str] = []
 
     async def complete(self, system: str, prompt: str) -> str:
+        self.systems.append(system)
         self.prompts.append(prompt)
         await asyncio.sleep(0.05)
         if self.error:
@@ -61,11 +63,12 @@ class FakeLLM:
         return "Symptômes : erreurs 500"
 
 
-def _agent(writable: bool = True, llm=None) -> tuple[IncidentAgent, FakeChat, Store, int]:
+def _agent(writable: bool = True, llm=None, managers=("Bob",)) -> tuple[IncidentAgent, FakeChat, Store, int]:
     store = Store(":memory:")
     session_id = store.create_session("https://teams.microsoft.com/meet/1", "IMV - Assistant IM")
     chat = FakeChat(writable)
-    return IncidentAgent(store, session_id, "IMV - Assistant IM", chat.send, llm=llm), chat, store, session_id
+    agent = IncidentAgent(store, session_id, "IMV - Assistant IM", chat.send, llm=llm, managers=managers)
+    return agent, chat, store, session_id
 
 
 def test_analysis_command_runs_in_background():
@@ -84,6 +87,23 @@ def test_analysis_command_runs_in_background():
     assert chat.sent == ["Symptômes : erreurs 500"]
     assert "Alice : Erreurs 500 sur le paiement" in llm.prompts[0]
     assert store.count_messages(sid) == 3
+
+
+def test_pistes_uses_context():
+    async def scenario():
+        llm = FakeLLM()
+        store = Store(":memory:")
+        sid = store.create_session("https://teams.microsoft.com/meet/1", "IMV - Assistant IM")
+        chat = FakeChat(True)
+        agent = IncidentAgent(store, sid, "IMV - Assistant IM", chat.send, llm=llm, context="DBA : dba-oncall", managers=["Bob"])
+        await agent.handle(_msg("Alice", "too many connections sur PostgreSQL", "m1"))
+        await agent.handle(_msg("Bob", "imv pistes", "m2"))
+        await agent.wait_analyses()
+        return chat.sent, llm
+
+    sent, llm = asyncio.run(scenario())
+    assert sent == ["Symptômes : erreurs 500"]
+    assert "Hypothèses" in llm.prompts[0] and "dba-oncall" in llm.systems[0]
 
 
 def test_ask_com_and_usage_errors():
@@ -207,7 +227,7 @@ def test_own_messages_are_ignored():
         agent, chat, store, sid = _agent()
         await agent.welcome()
         # Teams affiche le message de l'agent sans auteur : le lecteur l'attribue au dernier auteur vu
-        await agent.handle(_msg("Alice", WELCOME.replace("\n", " "), "own1"))
+        await agent.handle(_msg("Alice", chat.sent[0].replace("\n", " "), "own1"))
         await agent.handle(_msg("IMV - Assistant IM (Guest)", "texte quelconque", "own2"))
         await agent.handle(_msg("Alice", "message humain", "m1"))
         return store, sid
@@ -253,3 +273,91 @@ def test_store_dedup_and_session_status(tmp_path):
     assert row["status"] == "failed" and row["error_code"] == "chat_unavailable"
     assert row["message_count"] == 3
     store.close()
+
+
+def test_welcome_names_the_managers():
+    async def scenario():
+        agent, chat, _, _ = _agent(managers=["Erik Beauvalot"])
+        await agent.welcome()
+        bare, bare_chat, _, _ = _agent(managers=[])
+        await bare.welcome()
+        return chat.sent[0], bare_chat.sent[0]
+
+    with_im, without_im = asyncio.run(scenario())
+    assert with_im.startswith(WELCOME) and "réservées à Erik Beauvalot" in with_im
+    assert without_im == WELCOME
+
+
+def test_only_authorized_people_run_commands():
+    async def scenario():
+        agent, chat, _, _ = _agent(managers=["Erik Beauvalot"])
+        await agent.handle(_msg("Sophie Lambert", "le paiement est KO", "m1"))
+        await agent.handle(_msg("Sophie Lambert", "imv pause", "m2"))
+        await agent.handle(_msg("Sophie Lambert", "imv statut", "m3"))  # refus déjà expliqué : silence
+        await agent.handle(_msg("Sophie Lambert", "imv aide", "m4"))  # l'aide reste ouverte
+        await agent.handle(_msg("erik beauvalot", "imv autoriser sophie", "m5"))  # nom complété
+        await agent.handle(_msg("Sophie Lambert", "imv pause", "m6"))
+        await agent.handle(_msg("Sophie Lambert", "imv autoriser Karim", "m7"))  # réservé au responsable
+        await agent.handle(_msg("Erik Beauvalot", "imv autorisés", "m8"))
+        await agent.handle(_msg("Erik Beauvalot", "imv retirer Sophie", "m9"))
+        await agent.handle(_msg("Sophie Lambert", "imv reprise", "m10"))
+        return agent, chat.sent
+
+    agent, sent = asyncio.run(scenario())
+    assert sent[0].startswith("Sophie Lambert, « imv pause » est réservé aux personnes autorisées")
+    assert "imv autoriser Sophie Lambert" in sent[0]
+    assert sent[1] == HELP
+    assert sent[2] == "Sophie Lambert peut maintenant utiliser les commandes IMV."
+    assert sent[3].startswith("Enregistrement du chat en pause")
+    assert "réservé aux responsables d'IMV" in sent[4]
+    assert sent[5] == "Responsable : Erik Beauvalot. Autorisés : Sophie Lambert."
+    assert sent[6] == "Sophie Lambert ne peut plus utiliser les commandes IMV."
+    # Refus déjà expliqué à Sophie (m7) : la commande m10 est ignorée sans nouvelle réponse
+    assert len(sent) == 7 and agent.paused is True
+
+
+def test_authorize_everyone_then_restrict():
+    async def scenario():
+        agent, chat, _, _ = _agent()
+        await agent.handle(_msg("Bob", "imv autoriser tous", "m1"))
+        await agent.handle(_msg("Alice", "imv pause", "m2"))
+        await agent.handle(_msg("Bob", "imv retirer tous", "m3"))
+        await agent.handle(_msg("Alice", "imv reprise", "m4"))
+        return agent, chat.sent
+
+    agent, sent = asyncio.run(scenario())
+    assert sent[0].startswith("Commandes IMV ouvertes à tous")
+    assert sent[1].startswith("Enregistrement du chat en pause")
+    assert sent[2] == "Commandes IMV de nouveau réservées à Bob."
+    assert "réservé aux personnes autorisées" in sent[3] and agent.paused is True
+
+
+def test_first_command_author_becomes_manager():
+    async def scenario():
+        agent, chat, _, _ = _agent(managers=[])
+        await agent.handle(_msg("Alice", "imv aide", "m1"))  # l'aide ne désigne personne
+        await agent.handle(_msg("Bob", "imv statut", "m2"))
+        await agent.handle(_msg("Alice", "imv statut", "m3"))
+        return agent, chat.sent
+
+    agent, sent = asyncio.run(scenario())
+    assert sent[1].startswith("Bob est responsable d'IMV")
+    assert sent[2].startswith("Incident :")
+    assert sent[3].startswith("Alice, « imv statut » est réservé")
+    assert list(agent.managers.values()) == ["Bob"]
+
+
+def test_guest_with_same_name_is_not_the_manager():
+    async def scenario():
+        agent, chat, _, _ = _agent(managers=["Erik Beauvalot"])
+        await agent.handle(_msg("Erik Beauvalot (Guest)", "imv pause", "m1"))
+        await agent.handle(_msg("Erik", "imv autoriser Sophie", "m2"))
+        await agent.handle(_msg("Erik Beauvalot", "imv autoriser Karim", "m3"))
+        await agent.handle(_msg("Erik Beauvalot", "imv autoriser Ma", "m4"))
+        return agent, chat.sent
+
+    agent, sent = asyncio.run(scenario())
+    assert "réservé aux personnes autorisées" in sent[0] and agent.paused is False
+    assert "réservé aux responsables" in sent[1]
+    assert sent[2].startswith("Karim peut maintenant") and "n'a pas encore écrit" in sent[2]
+    assert sent[3].startswith("Ma peut maintenant")

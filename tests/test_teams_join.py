@@ -111,7 +111,7 @@ def test_agent_welcome_and_commands_in_chat(query):
             await session.join(admission_timeout=10)
             await session.open_chat()
             sid = store.create_session(session.url, session.display_name)
-            agent = IncidentAgent(store, sid, session.display_name, session.send_chat)
+            agent = IncidentAgent(store, sid, session.display_name, session.send_chat, managers=["Bob Durand"])
             queue: asyncio.Queue[ChatMessage] = asyncio.Queue()
             await session.read_chat(queue.put_nowait)
             assert await agent.welcome() is True
@@ -128,7 +128,7 @@ def test_agent_welcome_and_commands_in_chat(query):
             await session.close()
 
     sent, messages, incident = asyncio.run(scenario())
-    assert sent[0] == WELCOME
+    assert sent[0].startswith(WELCOME)
     assert sent[1].startswith("Suivi de l'incident INC0012345 démarré")
     # Ni l'accueil ni la réponse de l'agent ne sont enregistrés comme messages humains
     assert messages == [

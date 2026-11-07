@@ -12,7 +12,16 @@ import pytest
 
 from datetime import datetime
 
-from imo.analysis import SYSTEM, analyze, contains_secret, format_transcript, mask_secrets, resolve_audience
+from imo.analysis import (
+    SYSTEM,
+    analyze,
+    build_system,
+    contains_secret,
+    format_transcript,
+    load_context,
+    mask_secrets,
+    resolve_audience,
+)
 from imo.llm import LLMError, make_llm
 from imo.llm.providers import ClaudeCLI, Ollama
 
@@ -66,6 +75,24 @@ def test_analyze_builds_prompt():
     system, prompt = llm.calls[0]
     assert system == SYSTEM
     assert "Incident : INC42" in prompt and "<chat>" in prompt and "Alice : Erreurs 500" in prompt
+
+
+def test_context_goes_into_system_prompt(tmp_path):
+    (tmp_path / "contexte.md").write_text("Équipe DBA : astreinte dba-oncall", encoding="utf-8")
+    context = load_context(tmp_path / "contexte.md")
+    llm = FakeLLM()
+    asyncio.run(analyze(llm, "pistes", [_row("Alice", "Erreurs 500")], context=context))
+    system, prompt = llm.calls[0]
+    assert system.startswith(SYSTEM) and "<contexte>\nÉquipe DBA : astreinte dba-oncall\n</contexte>" in system
+    # Contexte dans le prompt système (mis en cache), pas dans le message
+    assert "dba-oncall" not in prompt and "Hypothèses" in prompt
+    assert build_system(None) == build_system("  \n") == SYSTEM
+
+
+def test_unreadable_context_file(tmp_path):
+    assert load_context(None) is None
+    with pytest.raises(ValueError, match="fichier de contexte illisible"):
+        load_context(tmp_path / "absent.md")
 
 
 def test_catchup_since_hour():

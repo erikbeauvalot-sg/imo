@@ -13,7 +13,7 @@ from pathlib import Path
 from dotenv import find_dotenv, load_dotenv
 
 from imo.agent import IncidentAgent
-from imo.analysis import TASKS, analyze
+from imo.analysis import TASKS, analyze, load_context
 from imo.connectors.teams import TeamsJoinError, TeamsSession
 from imo.connectors.teams.avatar import avatar_video
 from imo.llm import PROVIDERS, LLMError, make_llm
@@ -34,6 +34,13 @@ def build_parser() -> argparse.ArgumentParser:
     join.add_argument("url", help="URL de la réunion Teams")
     join.add_argument("--name", default=DEFAULT_NAME, help=f"Nom affiché (défaut : {DEFAULT_NAME!r})")
     join.add_argument("--incident", help="Référence de l'incident (sinon : « imv démarrer <ID> » dans le chat)")
+    join.add_argument(
+        "--im",
+        action="append",
+        metavar="NOM",
+        help="Responsable d'IMV, nom exact affiché par Teams (option répétable ; défaut : $IMV_IM, sinon "
+        "la première personne qui tape une commande). Lui seul peut autoriser d'autres participants.",
+    )
     join.add_argument("--no-welcome", action="store_true", help="Ne pas poster le message d'accueil")
     join.add_argument(
         "--avatar",
@@ -70,12 +77,12 @@ def build_parser() -> argparse.ArgumentParser:
     analyze_cmd.add_argument("-v", "--verbose", action="store_true")
 
     check = sub.add_parser("check-llm", help="Vérifier la connexion au LLM (court message de test)")
-    _add_llm_arguments(check, required=True)
+    _add_llm_arguments(check, required=True, context=False)
     check.add_argument("-v", "--verbose", action="store_true")
     return parser
 
 
-def _add_llm_arguments(parser: argparse.ArgumentParser, *, required: bool) -> None:
+def _add_llm_arguments(parser: argparse.ArgumentParser, *, required: bool, context: bool = True) -> None:
     parser.add_argument(
         "--llm",
         choices=PROVIDERS,
@@ -85,6 +92,16 @@ def _add_llm_arguments(parser: argparse.ArgumentParser, *, required: bool) -> No
     parser.add_argument(
         "--llm-model",
         help="Modèle (défaut : " + ", ".join(f"{p} → {m}" for p, m in DEFAULT_MODELS.items()) + ")",
+    )
+    if not context:
+        return
+    parser.add_argument(
+        "--context",
+        type=Path,
+        default=os.environ.get("IMV_CONTEXT") or None,
+        metavar="FICHIER",
+        help="Contexte de l'entreprise pour le LLM : applications, équipes, escalades… "
+        "(défaut : $IMV_CONTEXT ; modèle : contexte.exemple.md)",
     )
 
 
@@ -103,8 +120,9 @@ async def run_join(args: argparse.Namespace) -> int:
         browser=args.browser,
     )
     llm = make_llm(args.llm, args.llm_model) if args.llm else None
+    context = load_context(args.context) if llm else None
     if llm:
-        log.info("Analyses avec %s", llm.name)
+        log.info("Analyses avec %s%s", llm.name, f", contexte : {args.context}" if context else "")
     store = Store(args.db)
     session_id = store.create_session(session.url, session.display_name)
 
@@ -132,6 +150,8 @@ async def run_join(args: argparse.Namespace) -> int:
                 session.send_chat,
                 sink=MultiSink(*sinks, first_message),
                 llm=llm,
+                context=context,
+                managers=args.im or [n for n in [os.environ.get("IMV_IM", "")] if n.strip()],
             )
             if args.incident:
                 agent.start_incident(args.incident)
@@ -186,6 +206,7 @@ async def run_analyze(args: argparse.Namespace) -> int:
         print(f"Aucune base : {args.db}", file=sys.stderr)
         return 1
     llm = make_llm(args.llm, args.llm_model)
+    context = load_context(args.context)
     store = Store(args.db)
     try:
         messages = store.messages(args.session)
@@ -193,7 +214,7 @@ async def run_analyze(args: argparse.Namespace) -> int:
             print(f"Aucun message pour la session {args.session}", file=sys.stderr)
             return 1
         incident = store.session_incident(args.session)
-        print(await analyze(llm, args.task, messages, incident["ref"] if incident else None))
+        print(await analyze(llm, args.task, messages, incident["ref"] if incident else None, context=context))
     finally:
         store.close()
     return 0

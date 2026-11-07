@@ -5,3 +5,5 @@ __pycache__/
 sessions/
 debug/
 .env
+contexte.md
+.claude/settings.local.json

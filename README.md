@@ -22,7 +22,7 @@ uv pip install -e '.[dev]'
 .venv/bin/playwright install chromium
 ```
 
-Si `playwright install chromium` échoue (proxy ou filtrage du réseau d'entreprise), inutile d'insister : l'agent utilise alors **Google Chrome ou Microsoft Edge déjà installés** (essayés dans cet ordre si le Chromium de Playwright est absent). Pour imposer un navigateur : `--browser chrome|msedge|chromium`, ou `IMV_BROWSER=msedge` dans `.env`. Dans tous les cas un profil temporaire vierge est utilisé, jamais votre profil personnel. Pour retenter le téléchargement derrière un proxy : `HTTPS_PROXY=http://proxy:port python -m playwright install chromium`.
+Si `playwright install chromium` échoue (proxy ou filtrage du réseau d'entreprise), inutile d'insister : l'agent utilise alors **Google Chrome ou Microsoft Edge déjà installés** (essayés dans cet ordre si le Chromium de Playwright est absent). Pour imposer un navigateur : `--browser chrome|msedge|chromium`, ou `IMV_BROWSER=msedge` dans `.env`. Dans tous les cas un profil temporaire vierge est utilisé, jamais votre profil personnel. Pour retenter le téléchargement derrière un proxy : `HTTPS_PROXY=http://proxy:port python -m playwright install chromium`. Pour installer Chromium à la main depuis un navigateur : voir [INSTALL_CHROMIUM_MANUEL.md](INSTALL_CHROMIUM_MANUEL.md).
 
 `pyproject.toml` fait référence pour les dépendances ; `requirements.txt` et `requirements-dev.txt` doivent rester identiques, ce que vérifie `tests/test_requirements.py`. Après l'ajout d'une dépendance, mettre à jour les deux.
 
@@ -38,7 +38,7 @@ Si `playwright install chromium` échoue (proxy ou filtrage du réseau d'entrepr
 4. Chaque message s'affiche dans la console et est enregistré dans la base SQLite `sessions/imv.db`.
 5. `Ctrl+C` pour quitter la réunion.
 
-Options : `--name` (nom affiché : lettres, chiffres, espaces et `- ' . _ @` uniquement), `--incident INC…`, `--no-welcome`, `--avatar [IMAGE]` (caméra allumée avec le robot IMV, ou votre image PNG/JPEG : un invité n'a pas de photo de profil), `--db`, `--out` (copie JSONL), `--headless`, `--admission-timeout`, `--debug-dir`, `-v`.
+Options : `--im NOM` (responsable d'IMV, voir « Qui peut utiliser les commandes »), `--name` (nom affiché : lettres, chiffres, espaces et `- ' . _ @` uniquement), `--incident INC…`, `--no-welcome`, `--avatar [IMAGE]` (caméra allumée avec le robot IMV, ou votre image PNG/JPEG : un invité n'a pas de photo de profil), `--db`, `--out` (copie JSONL), `--headless`, `--admission-timeout`, `--debug-dir`, `-v`.
 
 ### Commandes dans le chat
 
@@ -54,8 +54,25 @@ Un invité ne peut pas être @mentionné : les commandes commencent par `imv`.
 | `imv résumé` | Point de situation : symptômes, impact, hypothèses, actions, prochaine étape |
 | `imv catchup` | Résumé court pour un nouvel arrivant |
 | `imv questions` | Questions à poser maintenant |
+| `imv pistes` | Aide à la résolution : hypothèses classées, vérifications à faire, contournements, pistes déjà écartées |
 | `imv timeline` | Chronologie des événements |
 | `imv actions` | Actions identifiées, owners, statuts |
+| `imv com [direction\|utilisateurs\|tech]` | Brouillon de communication pour l'audience choisie |
+| `imv ? <question>` | Question libre : réponse tirée du chat, complétée si utile par des pistes |
+
+| `imv autoriser <nom>` / `imv autoriser tous` | Autorise une personne, ou tout le monde (responsable uniquement) |
+| `imv retirer <nom>` / `imv retirer tous` | Retire une autorisation, ou réserve de nouveau les commandes (responsable uniquement) |
+| `imv autorisés` | Responsable et personnes autorisées |
+
+#### Qui peut utiliser les commandes
+
+Les commandes sont réservées au **responsable d'IMV** et aux personnes qu'il autorise ; seule `imv aide` est ouverte à tous.
+
+- Le responsable est désigné au lancement par `--im "Prénom Nom"` (répétable), ou par `IMV_IM` dans `.env`. Indiquez le nom **exactement comme Teams l'affiche** (la casse et les accents sont ignorés). Sans `--im`, la première personne qui tape une commande `imv` devient responsable, et l'agent l'annonce dans le chat.
+- Dans la réunion, le responsable tape `imv autoriser Sophie` : un nom partiel est complété d'après les participants qui ont déjà écrit (« Sophie Lambert »), s'il n'y en a qu'un qui correspond. `imv autoriser tous` ouvre les commandes à tout le monde, `imv retirer tous` les réserve de nouveau.
+- Une personne non autorisée reçoit une seule réponse, qui lui indique comment demander l'accès ; ses commandes suivantes sont ignorées sans réponse, pour ne pas encombrer le chat.
+- Un invité choisit librement son nom : Teams le suffixe alors de « (Guest) » ou « (Unverified) ». Ce suffixe est pris en compte, si bien qu'un invité nommé comme le responsable n'a pas ses droits.
+- La liste est tenue en mémoire pour la durée de la session : elle repart de zéro au prochain lancement.
 
 Les commandes d'analyse demandent l'option `--llm` (voir ci-dessous). Si le chat est en lecture seule pour les invités, les réponses s'affichent seulement dans la console. Les commandes déjà présentes dans le chat à l'arrivée de l'agent ne sont pas exécutées.
 
@@ -71,8 +88,10 @@ Les commandes d'analyse demandent l'option `--llm` (voir ci-dessous). Si le chat
 
 Les variables peuvent être dans l'environnement ou dans un fichier `.env` du répertoire courant (modèle : `.env.example` ; l'environnement est prioritaire). `python imo_agent.py check-llm --llm foundry` vérifie la connexion. `--llm-model` change le modèle. Les mots de passe et jetons repérés dans le chat sont masqués avant l'envoi au LLM. Avec `claude-cli`, le contenu du chat part vers votre compte Claude personnel : réservez-le à des réunions de test tant que le RSSI n'a pas validé.
 
+IMV n'est pas qu'un secrétaire : il aide à résoudre avec son expertise (exploitation, réseau, bases de données, cloud…), qu'il présente toujours comme des « pistes », distinctes des faits tirés du chat. Pour des pistes adaptées à votre SI, décrivez-le dans un fichier de contexte (applications, architecture, équipes, escalades, incidents connus) : copiez `contexte.exemple.md` en `contexte.md` (non versionné), puis `--context contexte.md` ou `IMV_CONTEXT=contexte.md` dans `.env`. Ce fichier part au LLM avec chaque analyse : aucun secret dedans.
+
 ```bash
-python imo_agent.py join "<url>" --llm claude-cli
+python imo_agent.py join "<url>" --llm claude-cli --context contexte.md
 python imo_agent.py analyze 5 resume --llm ollama      # rejoue une analyse sur une session enregistrée
 ```
 
