@@ -11,7 +11,7 @@ import wave
 from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import parse_qsl, urlencode, urljoin, urlparse, urlunparse
 
 from playwright.async_api import Browser, BrowserContext, Page, Playwright, async_playwright
 
@@ -90,6 +90,19 @@ def validate_meeting_url(url: str) -> str:
     return url.strip()
 
 
+def disable_app_launch(url: str) -> str:
+    """URL du lanceur Teams avec msLaunch=false : sinon il ouvre l'application Teams
+    installée sur la machine, qui rejoint la réunion avec le compte de l'utilisateur."""
+    parsed = urlparse(url)
+    if not parsed.path.endswith("/launcher.html"):
+        return url
+    query = dict(parse_qsl(parsed.query, keep_blank_values=True))
+    if query.get("msLaunch") == "false" and query.get("suppressPrompt") == "true":
+        return url
+    query.update(msLaunch="false", suppressPrompt="true")
+    return urlunparse(parsed._replace(query=urlencode(query)))
+
+
 class TeamsSession:
     """Une participation de l'agent à une réunion Teams."""
 
@@ -100,11 +113,14 @@ class TeamsSession:
         *,
         headless: bool = False,
         debug_dir: Path | None = None,
+        resolve_launcher: bool = True,
     ) -> None:
         self.url = validate_meeting_url(url)
         self.display_name = validate_display_name(display_name)
         self.headless = headless
         self.debug_dir = debug_dir
+        # Désactivé dans les tests : la résolution fait une requête réseau vers Teams.
+        self.resolve_launcher = resolve_launcher
         self._pw: Playwright | None = None
         self._browser: Browser | None = None
         self._context: BrowserContext | None = None
@@ -133,7 +149,17 @@ class TeamsSession:
             permissions=["microphone", "camera"],
             viewport={"width": 1366, "height": 900},
         )
+        await self._context.route("**/dl/launcher/launcher.html*", self._block_app_launch)
         self.page = await self._context.new_page()
+
+    async def _block_app_launch(self, route) -> None:
+        request = route.request
+        rewritten = disable_app_launch(request.url)
+        if rewritten != request.url and request.is_navigation_request():
+            log.debug("Lanceur Teams réécrit : msLaunch=false")
+            await route.fulfill(status=302, headers={"location": rewritten})
+        else:
+            await route.fallback()
 
     async def close(self) -> None:
         for closer in (self._context, self._browser):
@@ -157,7 +183,8 @@ class TeamsSession:
     async def join(self, *, prejoin_timeout: float = 90, admission_timeout: float = 600) -> None:
         page = self._require_page()
         log.info("Ouverture de la réunion…")
-        await page.goto(self.url, wait_until="domcontentloaded")
+        target = await self._resolve_launcher_url() if self.resolve_launcher else self.url
+        await page.goto(target, wait_until="domcontentloaded")
         try:
             await self._reach_prejoin(prejoin_timeout)
             await self._fill_prejoin()
@@ -165,6 +192,25 @@ class TeamsSession:
         except TeamsJoinError:
             await self.snapshot("join-failed")
             raise
+
+    async def _resolve_launcher_url(self) -> str:
+        """Suit la redirection du lien de réunion vers le lanceur et y force msLaunch=false.
+
+        Playwright n'intercepte pas les redirections : la route de start() ne suffit
+        pas pour la redirection 302 du lien /meet/... vers launcher.html."""
+        assert self._context is not None
+        try:
+            response = await self._context.request.get(self.url, max_redirects=0, timeout=15000)
+            location = response.headers.get("location")
+            await response.dispose()
+        except Exception as exc:  # noqa: BLE001 — on retombe sur l'URL d'origine
+            log.debug("Résolution du lien impossible : %s", exc)
+            return self.url
+        if not location:
+            return self.url
+        target = disable_app_launch(urljoin(self.url, location))
+        log.debug("Lien résolu : %s", target)
+        return target
 
     async def _reach_prejoin(self, timeout: float) -> None:
         page = self._require_page()

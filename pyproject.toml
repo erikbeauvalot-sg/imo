@@ -1,10 +1,14 @@
 [project]
 name = "imo-agent"
-version = "0.1.0"
-description = "Incident Manager Virtuel — prototype : rejoint une réunion Teams par URL et lit le chat"
+version = "0.3.0"
+description = "Incident Manager Virtuel — prototype : rejoint une réunion Teams par URL, lit et analyse le chat"
 requires-python = ">=3.11"
 dependencies = [
     "playwright>=1.48",
+    "anthropic>=2.6",
+    "openai>=1.50",
+    "azure-identity>=1.19",
+    "python-dotenv>=1.0",
 ]
 
 [project.optional-dependencies]

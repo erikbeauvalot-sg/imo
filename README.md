@@ -35,7 +35,30 @@ Un invité ne peut pas être @mentionné : les commandes commencent par `imv`.
 | `imv statut` | Incident suivi, état de l'enregistrement, nombre de messages |
 | `imv pause` / `imv reprise` | Suspend / reprend l'enregistrement du chat |
 
-Les commandes d'analyse (`résumé`, `timeline`, `actions`…) sont reconnues mais pas encore disponibles (Étape 2). Si le chat est en lecture seule pour les invités, les réponses s'affichent seulement dans la console. Les commandes déjà présentes dans le chat à l'arrivée de l'agent ne sont pas exécutées.
+| `imv résumé` | Point de situation : symptômes, impact, hypothèses, actions, prochaine étape |
+| `imv catchup` | Résumé court pour un nouvel arrivant |
+| `imv questions` | Questions à poser maintenant |
+| `imv timeline` | Chronologie des événements |
+| `imv actions` | Actions identifiées, owners, statuts |
+
+Les commandes d'analyse demandent l'option `--llm` (voir ci-dessous). Si le chat est en lecture seule pour les invités, les réponses s'affichent seulement dans la console. Les commandes déjà présentes dans le chat à l'arrivée de l'agent ne sont pas exécutées.
+
+### Analyse (LLM)
+
+| `--llm` | Usage | Configuration | Modèle par défaut |
+| --- | --- | --- | --- |
+| `claude-cli` | Mac perso, prototype | Claude Code installé et connecté (`claude`) ; consomme l'abonnement | `opus` |
+| `foundry` | Réseau de la société : Claude sur Microsoft Foundry | `AZURE_FOUNDRY_ENDPOINT` + Entra ID (`AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET`) ou `ANTHROPIC_FOUNDRY_API_KEY` | `ANTHROPIC_FOUNDRY_MODEL`, sinon `claude-opus-5-5` |
+| `azure-openai` | Réseau de la société : GPT sur Microsoft Foundry | `AZURE_FOUNDRY_ENDPOINT` (ou `AZURE_OPENAI_ENDPOINT`) + Entra ID ou `AZURE_OPENAI_API_KEY` | `OPENAI_MODEL` |
+| `anthropic` | API Anthropic directe | `ANTHROPIC_API_KEY` | `claude-opus-5-5` |
+| `ollama` | Modèle local, rien ne sort de la machine | Ollama lancé (`OLLAMA_HOST` si autre que `localhost:11434`) | `qwen3:14b` |
+
+Les variables peuvent être dans l'environnement ou dans un fichier `.env` du répertoire courant (modèle : `.env.example` ; l'environnement est prioritaire). `python imo_agent.py check-llm --llm foundry` vérifie la connexion. `--llm-model` change le modèle. Les mots de passe et jetons repérés dans le chat sont masqués avant l'envoi au LLM. Avec `claude-cli`, le contenu du chat part vers votre compte Claude personnel : réservez-le à des réunions de test tant que le RSSI n'a pas validé.
+
+```bash
+python imo_agent.py join "<url>" --llm claude-cli
+python imo_agent.py analyze 5 resume --llm ollama      # rejoue une analyse sur une session enregistrée
+```
 
 ### Historique
 
@@ -70,4 +93,5 @@ Les tests rejouent le parcours (pré-connexion, salle d'attente, admission, chat
 - Les sélecteurs dépendent de l'interface Teams web en anglais (le navigateur est forcé en `en-US`) et devront être ajustés après les premiers essais réels, y compris la zone de saisie du chat (`CHAT_INPUT`).
 - L'agent reconnaît ses propres messages par son nom ou par leur texte : à vérifier sur le vrai Teams, qui peut les afficher sans auteur.
 - Les messages postés par d'autres bots, les modifications et suppressions de messages ne sont pas encore gérés.
-- Pas encore d'analyse (résumés, suggestions) : c'est l'Étape 2 du plan.
+- L'analyse relit tout le chat à chaque commande (pas encore d'état structuré ni de résumé glissant) : suffisant pour des calls de quelques heures.
+- Pas encore de suggestions proactives ni de commandes `com` et `clore` (Étape 2b/2c).
