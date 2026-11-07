@@ -19,7 +19,6 @@ Exemple avec Playwright 1.64.1 sur un Mac Apple Silicon :
 | Composant | Archive | Dossier de destination |
 |---|---|---|
 | Chromium | `https://cdn.playwright.dev/builds/cft/156.0.8078.4/mac-arm64/chrome-mac-arm64.zip` | `~/Library/Caches/ms-playwright/chromium-1248` |
-| Headless shell (seulement pour `--headless`) | `https://cdn.playwright.dev/builds/cft/156.0.8078.4/mac-arm64/chrome-headless-shell-mac-arm64.zip` | `~/Library/Caches/ms-playwright/chromium_headless_shell-1248` |
 
 - FFmpeg n'est pas nécessaire : il ne sert qu'à enregistrer des vidéos.
 - Sur un Mac Intel, les adresses contiennent `mac-x64` au lieu de `mac-arm64`.
@@ -36,15 +35,7 @@ xattr -dr com.apple.quarantine "$D"
 touch "$D/INSTALLATION_COMPLETE" "$D/DEPENDENCIES_VALIDATED"
 ```
 
-Si vous avez besoin du mode `--headless`, faites de même pour le headless shell :
-
-```bash
-D=~/Library/Caches/ms-playwright/chromium_headless_shell-1248
-mkdir -p "$D"
-unzip -q ~/Downloads/chrome-headless-shell-mac-arm64.zip -d "$D"
-xattr -dr com.apple.quarantine "$D"
-touch "$D/INSTALLATION_COMPLETE" "$D/DEPENDENCIES_VALIDATED"
-```
+Le « headless shell » listé par la commande n'est pas nécessaire : IMV cache la fenêtre avec le Chromium complet.
 
 Résultat attendu :
 

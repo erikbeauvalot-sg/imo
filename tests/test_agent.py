@@ -361,3 +361,20 @@ def test_guest_with_same_name_is_not_the_manager():
     assert "réservé aux responsables" in sent[1]
     assert sent[2].startswith("Karim peut maintenant") and "n'a pas encore écrit" in sent[2]
     assert sent[3].startswith("Ma peut maintenant")
+
+
+def test_spoken_words_are_recorded_but_never_run_as_commands():
+    async def scenario():
+        agent, chat, store, sid = _agent()
+        agent.transcribing = True
+        await agent.welcome()
+        await agent.handle(_msg("Bob", "imv pause", source="transcript"))
+        await agent.handle(_msg("Bob", "imv pause", "m1"))
+        await agent.handle(_msg("Alice", "on bascule sur le site de secours", source="transcript"))
+        return agent, chat.sent, store, sid
+
+    agent, sent, store, sid = asyncio.run(scenario())
+    assert "Je transcris aussi ce qui est dit à l'oral" in sent[0]
+    # « imv pause » prononcé : enregistré, pas exécuté ; tapé dans le chat : exécuté
+    assert [(m["source"], m["text"]) for m in store.messages(sid)] == [("transcript", "imv pause"), ("chat", "imv pause")]
+    assert agent.paused is True and len(sent) == 2

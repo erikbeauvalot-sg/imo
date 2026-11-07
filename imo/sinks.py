@@ -16,7 +16,8 @@ class Sink(Protocol):
 class ConsoleSink:
     def write(self, message: ChatMessage) -> None:
         hour = message.captured_at[11:19]
-        print(f"[{hour}] {message.sender} : {message.text}", flush=True)
+        oral = " (oral)" if message.source == "transcript" else ""
+        print(f"[{hour}] {message.sender}{oral} : {message.text}", flush=True)
 
 
 class JsonlSink:

@@ -290,3 +290,11 @@ def test_azure_openai_chat(azure_env):
 def test_unknown_provider():
     with pytest.raises(ValueError):
         make_llm("gpt")
+
+
+def test_transcript_lines_are_marked_oral():
+    rows = [_row("Alice", "Erreurs 500"), {**_row("Bob", "je redémarre le pod"), "source": "transcript"}]
+    lines = format_transcript(rows).splitlines()
+    assert lines[0].endswith("Alice : Erreurs 500")
+    assert lines[1].endswith("Bob (oral) : je redémarre le pod")
+    assert "(oral)" in SYSTEM

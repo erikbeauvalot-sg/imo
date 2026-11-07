@@ -21,6 +21,7 @@ from imo.models import ChatMessage
 log = logging.getLogger(__name__)
 
 CHAT_READER_JS = (Path(__file__).with_name("chat_reader.js")).read_text(encoding="utf-8")
+CAPTIONS_READER_JS = (Path(__file__).with_name("captions_reader.js")).read_text(encoding="utf-8")
 
 # Teams n'accepte que lettres, chiffres, espaces et - ' . _ @ dans le nom d'un invité,
 # sinon le bouton « Join now » reste désactivé.
@@ -161,9 +162,10 @@ class TeamsSession:
         for name in candidates:
             try:
                 # Profil temporaire vierge dans tous les cas, jamais celui de l'utilisateur.
-                browser = await self._pw.chromium.launch(
-                    headless=self.headless, args=args, channel=None if name == "chromium" else name
-                )
+                # Sans fenêtre, channel="chromium" active le nouveau headless : le vrai navigateur
+                # (WebRTC, rendu identiques), pas le « headless shell » allégé que Teams pourrait rejeter.
+                channel = name if name != "chromium" else ("chromium" if self.headless else None)
+                browser = await self._pw.chromium.launch(headless=self.headless, args=args, channel=channel)
             except Exception as exc:  # noqa: BLE001 — navigateur absent : on essaie le suivant
                 errors.append(f"{name} : {str(exc).splitlines()[0]}")
                 continue
@@ -347,6 +349,59 @@ class TeamsSession:
         await page.expose_function("__imvOnMessage", _callback)
         await page.evaluate(CHAT_READER_JS)
 
+    # -- sous-titres (voix) -----------------------------------------------
+
+    async def enable_captions(self, timeout: float = 20) -> bool:
+        """Active les sous-titres en direct de Teams ; False s'ils restent indisponibles.
+
+        Prototype : chaque étape est capturée (captions-*) pour ajuster les sélecteurs."""
+        page = self._require_page()
+        if await self._present(sel.CAPTIONS_CONTAINER):
+            return True
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if await self._click_first(sel.CAPTIONS_ON) or (
+                await self._click_first(sel.MORE_BUTTON)
+                and await self._wait_click(sel.LANGUAGE_SPEECH_MENU, 3)
+                and await self._wait_click(sel.CAPTIONS_ON, 3)
+            ):
+                await self.snapshot("captions-menu")
+                for _ in range(20):
+                    if await self._present(sel.CAPTIONS_CONTAINER):
+                        log.info("Sous-titres en direct activés")
+                        await self.snapshot("captions-on")
+                        return True
+                    await page.wait_for_timeout(250)
+            await page.keyboard.press("Escape")  # referme un menu resté ouvert
+            await page.wait_for_timeout(1000)
+        await self.snapshot("captions-failed")
+        log.warning("Sous-titres en direct indisponibles : la voix ne sera pas transcrite")
+        return False
+
+    async def read_captions(self, on_message: Callable[[ChatMessage], None]) -> None:
+        """Installe le lecteur de sous-titres ; chaque phrase devient un message « transcript »."""
+        page = self._require_page()
+
+        def _callback(payload: dict) -> None:
+            text = str(payload.get("text") or "").strip()
+            if text:
+                on_message(
+                    ChatMessage(
+                        sender=str(payload.get("sender") or "Inconnu"),
+                        text=text,
+                        sent_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                        source="transcript",
+                    )
+                )
+
+        await page.expose_function("__imvOnCaption", _callback)
+        await page.evaluate(CAPTIONS_READER_JS)
+
+    async def captions_state(self) -> dict:
+        return await self._require_page().evaluate(
+            "() => window.__imvCaptionsReader ? window.__imvCaptionsReader.state() : null"
+        )
+
     async def send_chat(self, text: str) -> bool:
         """Poste `text` dans le chat ; False si la zone de saisie est absente (chat en lecture seule)."""
         page = self._require_page()
@@ -431,8 +486,28 @@ class TeamsSession:
                 continue
         return None
 
+    async def _present(self, selectors: list[str]) -> bool:
+        """Élément dans la page, même invisible (ex. zone des sous-titres vide tant que personne ne parle)."""
+        page = self._require_page()
+        for s in selectors:
+            try:
+                if await page.locator(s).count():
+                    return True
+            except Exception:  # noqa: BLE001 — page en transition
+                continue
+        return False
+
     async def _visible(self, selectors: list[str]) -> bool:
         return await self._first_visible(selectors) is not None
+
+    async def _wait_click(self, selectors: list[str], timeout: float) -> bool:
+        """Clique le premier élément visible, en l'attendant jusqu'à `timeout` (menus animés)."""
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if await self._click_first(selectors):
+                return True
+            await self._require_page().wait_for_timeout(200)
+        return False
 
     async def _click_first(self, selectors: list[str]) -> bool:
         loc = await self._first_visible(selectors)

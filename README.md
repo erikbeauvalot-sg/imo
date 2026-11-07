@@ -38,7 +38,21 @@ Si `playwright install chromium` échoue (proxy ou filtrage du réseau d'entrepr
 4. Chaque message s'affiche dans la console et est enregistré dans la base SQLite `sessions/imv.db`.
 5. `Ctrl+C` pour quitter la réunion.
 
-Options : `--context FICHIER` (défaut : `contexte.md` du répertoire courant s'il existe), `--im NOM` (responsable d'IMV, voir « Qui peut utiliser les commandes »), `--name` (nom affiché : lettres, chiffres, espaces et `- ' . _ @` uniquement), `--incident INC…`, `--no-welcome`, `--avatar [IMAGE]` (caméra allumée avec le robot IMV, ou votre image PNG/JPEG : un invité n'a pas de photo de profil), `--db`, `--out` (copie JSONL), `--headless`, `--admission-timeout`, `--debug-dir`, `-v`.
+Options : `--captions` (transcription de la voix, voir ci-dessous), `--context FICHIER` (défaut : `contexte.md` du répertoire courant s'il existe), `--im NOM` (responsable d'IMV, voir « Qui peut utiliser les commandes »), `--name` (nom affiché : lettres, chiffres, espaces et `- ' . _ @` uniquement), `--incident INC…`, `--no-welcome`, `--avatar [IMAGE]` (caméra allumée avec le robot IMV, ou votre image PNG/JPEG : un invité n'a pas de photo de profil), `--db`, `--out` (copie JSONL), `--show` (affiche la fenêtre du navigateur, cachée par défaut : utile pour diagnostiquer), `--admission-timeout`, `--debug-dir`, `-v`.
+
+### Voix : sous-titres en direct (prototype)
+
+Avec `--captions`, l'agent active les **sous-titres en direct de Teams** (menu « More » → « Language and speech » → « Turn on live captions ») et lit le texte affiché : chaque phrase est enregistrée avec le nom de la personne qui parle, comme un message `transcript`. Teams fait la transcription : aucun flux audio n'est traité par l'agent et la voix ne part vers aucun service supplémentaire.
+
+- Les phrases s'affichent dans la console avec la mention « (oral) », et les analyses (`imv résumé`, `imv pistes`…) en tiennent compte en les distinguant du chat écrit.
+- Le message d'accueil annonce la transcription ; `imv pause` la suspend aussi. Une commande `imv` prononcée à l'oral n'est jamais exécutée.
+- Si les sous-titres ne peuvent pas être activés (option absente pour les invités, interface différente), l'agent continue avec le chat seul et le signale dans la console.
+- **Prototype** : les sélecteurs de l'interface viennent de sources publiques et doivent être confirmés sur le vrai Teams. Chaque étape est capturée dans `debug/` (`captions-menu`, `captions-on`, `captions`, `captions-failed`) : envoyez ces fichiers pour ajuster la lecture. La langue parlée des sous-titres doit être réglée sur le français dans la réunion.
+- Transcrire la voix est un traitement de données personnelles : à valider avec le RSSI (et le CSE) avant tout usage réel.
+
+```bash
+python imo_agent.py join "<url>" --captions --llm azure-openai
+```
 
 ### Commandes dans le chat
 

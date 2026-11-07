@@ -143,9 +143,16 @@ class IncidentAgent:
         self.open_to_all = False
         self._seen: dict[str, str] = {}  # auteurs vus dans le chat, pour compléter « imv autoriser »
         self._refused: set[str] = set()  # refus déjà expliqués : une seule réponse par personne
+        # Voix transcrite (sous-titres Teams) : annoncée dans l'accueil.
+        self.transcribing = False
 
     async def welcome(self) -> bool:
         text = WELCOME
+        if self.transcribing:
+            text += (
+                "\nJe transcris aussi ce qui est dit à l'oral, à partir des sous-titres Teams ; "
+                "« imv pause » suspend aussi cette transcription."
+            )
         if self.managers:
             text += (
                 f"\nCommandes réservées à {self._managers_label()}, qui peut autoriser d'autres participants "
