@@ -23,6 +23,8 @@ import urllib.error
 import urllib.request
 from typing import Protocol
 
+from imo import metrics
+
 log = logging.getLogger(__name__)
 
 PROVIDERS = ("claude-cli", "foundry", "azure-openai", "anthropic", "ollama")
@@ -269,18 +271,22 @@ class Ollama:
 
 
 class Timed:
-    """Journalise la durée de chaque appel."""
+    """Journalise la durée de chaque appel et la compte dans les métriques (imo.metrics)."""
 
     def __init__(self, llm: LLM) -> None:
         self.llm = llm
         self.name = llm.name
 
     async def complete(self, system: str, prompt: str) -> str:
-        start = time.monotonic()
+        start, ok = time.monotonic(), False
         try:
-            return await self.llm.complete(system, prompt)
+            answer = await self.llm.complete(system, prompt)
+            ok = True
+            return answer
         finally:
-            log.info("LLM %s : %.1f s", self.name, time.monotonic() - start)
+            elapsed = time.monotonic() - start
+            log.info("LLM %s : %.1f s", self.name, elapsed)
+            metrics.record_llm(self.name, elapsed, ok)
 
 
 def make_llm(provider: str, model: str | None = None) -> LLM:

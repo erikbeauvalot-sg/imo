@@ -19,7 +19,7 @@ from urllib.parse import urlsplit
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.openapi.docs import get_swagger_ui_html
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field
 
@@ -37,6 +37,7 @@ from imo.auth import (
     token_hash,
     verify_password,
 )
+from imo import metrics
 from imo.agent import parse_command
 from imo.analysis import TASKS, UsageError, analyze, load_context
 from imo.llm import PROVIDERS, LLMError, make_llm
@@ -534,6 +535,13 @@ def create_app(
         except (LLMError, ValueError) as exc:
             raise HTTPException(502, f"analyse impossible : {exc}") from exc
         return {"command": command.verb, "arg": command.arg, "text": text}
+
+    @app.get("/api/metrics", response_class=PlainTextResponse, tags=["supervision"])
+    async def prometheus_metrics(_: User = Depends(current_user)) -> PlainTextResponse:
+        """Métriques Prometheus (format texte) : agents en cours, sessions, échecs, appels au LLM.
+        Avec la connexion obligatoire : jeton d'API d'un utilisateur, même lecteur."""
+        live = [r.status for i, r in meetings.runners.items() if not meetings.tasks[i].done()]
+        return PlainTextResponse(metrics.render(meetings.store, live), media_type="text/plain; version=0.0.4")
 
     @app.get("/api/meetings/{session_id}", tags=["réunions"])
     async def get_meeting(session_id: int, user: User = Depends(current_user)) -> dict:

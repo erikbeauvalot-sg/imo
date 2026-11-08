@@ -11,3 +11,4 @@ contexte.md
 deploy/data/
 deploy/letsencrypt/
 deploy/traefik/*.yml
+deploy/traefik/*.htpasswd

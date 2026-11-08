@@ -22,6 +22,10 @@ services:
       - --certificatesresolvers.le.acme.storage=/letsencrypt/acme.json
       - --certificatesresolvers.le.acme.tlschallenge=true
       - --accesslog=true
+      # Métriques Prometheus, publiées seulement par une route déclarée (traefik/supervision.yml.example)
+      - --metrics.prometheus=true
+      - --metrics.prometheus.manualrouting=true
+      - --metrics.prometheus.addrouterslabels=true
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - ./letsencrypt:/letsencrypt

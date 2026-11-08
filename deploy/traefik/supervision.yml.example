@@ -1,0 +1,38 @@
+# Métriques du serveur pour un Prometheus distant : node_exporter de l'hôte (127.0.0.1:9100) et
+# Traefik lui-même, sur https://<domaine>/metrics/node et /metrics/traefik.
+# Copier en supervision.yml (non versionné) ; adapter le domaine et l'adresse du Prometheus ;
+# créer le fichier de mots de passe (htpasswd, bcrypt) dans ce dossier :
+#   docker run --rm httpd:2.4-alpine htpasswd -nbB prometheus '<mot de passe>' > metrics.htpasswd
+# Les métriques d'IMV sont sur /api/metrics, avec un jeton d'API (voir deploy/README.md).
+http:
+  routers:
+    metrics-node:
+      rule: Host(`imv.exemple.com`) && Path(`/metrics/node`)
+      entryPoints: [websecure]
+      service: node-exporter
+      middlewares: [metrics-ip, metrics-auth, metrics-path]
+      tls:
+        certResolver: le
+    metrics-traefik:
+      rule: Host(`imv.exemple.com`) && Path(`/metrics/traefik`)
+      entryPoints: [websecure]
+      service: prometheus@internal
+      middlewares: [metrics-ip, metrics-auth, metrics-path]
+      tls:
+        certResolver: le
+  services:
+    node-exporter:
+      loadBalancer:
+        servers:
+          - url: http://127.0.0.1:9100
+  middlewares:
+    metrics-ip:
+      ipAllowList:
+        sourceRange:
+          - 203.0.113.10/32  # adresse de sortie du Prometheus
+    metrics-auth:
+      basicAuth:
+        usersFile: /etc/traefik/dynamic/metrics.htpasswd
+    metrics-path:
+      replacePath:
+        path: /metrics

@@ -34,7 +34,7 @@ Puis ouvrir `https://<IMV_DOMAIN>`. Le certificat est obtenu au premier accès (
 | Sauvegarde de la base | `sqlite3 data/sessions/imv.db ".backup imv-$(date +%F).db"` (sur l'hôte, paquet `sqlite3`) |
 
 - **Arrêter ou redémarrer IMV termine les réunions en cours** : chaque agent dit au revoir et quitte sa réunion (60 s accordées), puis « Relancer » dans la page.
-- `data/` contient tout l'état : la base (`sessions/imv.db` : utilisateurs, réunions, **messages des chats**), les captures de diagnostic (`debug/`, qui contiennent aussi des messages : à purger) et `contexte.md`. Après une modification de `contexte.md`, redémarrer IMV.
+- `data/` contient tout l'état : la base (`sessions/imv.db` : utilisateurs, réunions, **messages des chats**), les captures de diagnostic (`debug/`, qui contiennent aussi des messages : à purger) et `contexte.md`, relu à chaque lancement d'agent (inutile de redémarrer IMV après une modification).
 - `letsencrypt/acme.json` contient la clé privée du certificat : ni copie, ni partage.
 
 ## Sécurité
@@ -57,6 +57,18 @@ Les analyses sont décomptées de votre abonnement, avec les mêmes limites d'us
 ## Autres services de l'hôte
 
 Traefik peut publier en HTTPS un service qui tourne sur le VPS hors Docker, en écoute sur `127.0.0.1` (par exemple un tableau de bord d'administration) : copier `traefik/hote.yml.example` en `traefik/<nom>.yml`, adapter le nom de domaine (enregistrement DNS vers le VPS), le port et les adresses IP autorisées. Ces fichiers ne sont pas versionnés et Traefik les prend en compte sans redémarrage. Le service garde sa propre authentification ; le filtre IP (`ipAllowList`) la complète.
+
+## Supervision (Prometheus)
+
+Trois sources de métriques, pour un Prometheus distant :
+
+| Source | Adresse | Accès |
+| --- | --- | --- |
+| IMV : agents en cours, sessions et échecs, messages, appels au LLM (`imv_*`) | `https://<IMV_DOMAIN>/api/metrics` | Jeton d'API d'un utilisateur dédié (rôle lecteur suffit) : `user add prometheus --role viewer`, puis `token add prometheus --name prometheus` |
+| Hôte (node_exporter, paquet `prometheus-node-exporter` écoutant sur `127.0.0.1:9100`) | `https://<IMV_DOMAIN>/metrics/node` | Route Traefik `traefik/supervision.yml` (modèle `.example`) : filtre IP + mot de passe |
+| Traefik : requêtes, codes et durées par route (IMV, autres services), certificats | `https://<IMV_DOMAIN>/metrics/traefik` | Idem |
+
+Côté Prometheus : `scheme: https`, `metrics_path` ci-dessus, `authorization` (jeton, `credentials_file`) pour IMV et `basic_auth` (`password_file`) pour les deux autres. Une sonde blackbox sur `https://<IMV_DOMAIN>/login` complète l'ensemble (disponibilité, expiration du certificat).
 
 ## Limites
 

@@ -435,3 +435,66 @@ def test_token_commands(tmp_path, monkeypatch, capsys):
     assert main(["token", "del", str(token_id), "--db", db]) == 0
     assert main(["token", "del", str(token_id), "--db", db]) == 1
     assert Store(db).api_token_user(token_hash(token)) is None
+
+
+def test_prometheus_metrics(online, tmp_path):
+    from imo import metrics
+
+    client, ids = online
+    metrics.reset()
+    metrics.record_llm("claude-cli:opus", 2.5, ok=True)
+    metrics.record_llm("claude-cli:opus", 0.5, ok=False)
+    store = Store(tmp_path / "imv.db")
+    store.add_message(ids["sre_meeting"], ChatMessage(sender="Bob", text="Erreurs 500", message_id="m1"))
+    store.set_session_status(ids["dba_meeting"], "failed", "rejected")
+    store.close()
+
+    assert client.get("/api/metrics").status_code == 401
+    _login(client, "victor")  # un lecteur suffit
+    token = client.post("/api/tokens", json={"name": "prometheus"}).json()["token"]
+    client.cookies.clear()
+    r = client.get("/api/metrics", headers={"Authorization": f"Bearer {token}"})
+    assert r.status_code == 200 and r.headers["content-type"].startswith("text/plain")
+    text = r.text
+    for line in (
+        'imv_agents{status="in_meeting"} 0',
+        'imv_sessions{status="joining"} 2',
+        'imv_sessions{status="failed"} 1',
+        'imv_session_failures{error_code="rejected"} 1',
+        'imv_messages{source="chat"} 1',
+        'imv_users{role="viewer"} 1',
+        'imv_llm_requests_total{llm="claude-cli:opus",outcome="ok"} 1',
+        'imv_llm_requests_total{llm="claude-cli:opus",outcome="error"} 1',
+        'imv_llm_request_seconds_total{llm="claude-cli:opus"} 3',
+    ):
+        assert line in text, line
+    assert "# TYPE imv_llm_requests_total counter" in text
+    metrics.reset()
+
+
+def test_llm_calls_are_counted(monkeypatch):
+    from imo import metrics
+    from imo.llm.providers import LLMError, Timed
+
+    class Failing:
+        name = "faux"
+
+        async def complete(self, system, prompt):
+            raise LLMError("quota")
+
+    class Working:
+        name = "faux"
+
+        async def complete(self, system, prompt):
+            return "OK"
+
+    metrics.reset()
+    import asyncio
+
+    assert asyncio.run(Timed(Working()).complete("s", "p")) == "OK"
+    with pytest.raises(LLMError):
+        asyncio.run(Timed(Failing()).complete("s", "p"))
+    text = metrics.render(Store(":memory:"), [])
+    assert 'imv_llm_requests_total{llm="faux",outcome="ok"} 1' in text
+    assert 'imv_llm_requests_total{llm="faux",outcome="error"} 1' in text
+    metrics.reset()

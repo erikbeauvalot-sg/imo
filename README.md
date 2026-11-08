@@ -214,6 +214,7 @@ curl -s -H "$H" -X DELETE $IMV/api/meetings/12                # quitter la réun
 | `POST /api/meetings/<id>/analyze` | opérateur | `{"command": "rapport", "language": "en"}` : analyse LLM renvoyée sans publication, aussi après la réunion |
 | `POST /api/meetings/<id>/chat` | opérateur | `{"text": "…"}` : message libre au nom de l'agent |
 | `POST /api/meetings/<id>/restart` · `DELETE /api/meetings/<id>` | opérateur | Relancer une session terminée · quitter la réunion |
+| `GET /api/metrics` | lecteur | Métriques Prometheus (format texte) : agents en cours, sessions, échecs, messages, appels au LLM |
 | `GET /api/options` | lecteur | Fournisseurs LLM, groupes où l'utilisateur peut lancer un agent |
 | `GET /api/me` · `POST /api/me/password` | lecteur | Utilisateur courant · changer son mot de passe (`{"current", "new"}`) |
 | `GET\|POST /api/tokens` · `DELETE /api/tokens/<id>` | lecteur | Ses jetons (`{"name", "days"}`) ; administrateurs : `?all=true`, `"user_id"` pour un autre utilisateur. Création depuis une connexion par mot de passe seulement |
