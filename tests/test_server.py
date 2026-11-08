@@ -284,3 +284,26 @@ def test_cancelled_runner_still_leaves_the_meeting(fake_teams, caplog):
     assert runner.status == "ended"
     assert runner.store.session(runner.session_id)["error_code"] == "cancelled"
     assert "Réunion quittée" in caplog.text  # bouton Leave cliqué avant la fermeture du navigateur
+
+
+def test_server_runs_agent_commands_through_the_api(fake_teams, tmp_path):
+    with _client(tmp_path / "imv.db") as client:
+        session_id = client.post("/api/meetings", json={"url": MEETING_URL, "welcome": False, "llm": ""}).json()["id"]
+        _wait(client, session_id, lambda d: d["meeting"]["status"] == "in_meeting" and d["feed"])
+        assert client.get(f"/api/meetings/{session_id}").json()["status"] == "in_meeting"
+        r = client.post(f"/api/meetings/{session_id}/command", json={"command": "démarrer INC77"})
+        assert r.status_code == 200, r.text
+        assert r.json()["command"] == "demarrer" and r.json()["delivered"] is True
+        assert client.get(f"/api/meetings/{session_id}").json()["incident"] == "INC77"
+        r = client.post(f"/api/meetings/{session_id}/command", json={"command": "pause"})
+        assert client.get(f"/api/meetings/{session_id}").json()["paused"] is True
+        r = client.post(f"/api/meetings/{session_id}/command", json={"command": "résumé"})
+        assert r.status_code == 400 and "LLM" in r.json()["detail"]
+        assert client.post(f"/api/meetings/{session_id}/command", json={"command": "bonjour"}).status_code == 400
+        texts = [f["text"] for f in client.get(f"/api/meetings/{session_id}/feed?limit=5").json()["feed"]]
+        assert len(texts) <= 5 and any("INC77" in t for t in texts)
+
+        r = client.post(f"/api/meetings/{session_id}/command", json={"command": "clore"})
+        assert r.status_code == 200
+        data = _wait(client, session_id, lambda d: not d["meeting"]["live"])
+        assert data["meeting"]["status"] == "ended"

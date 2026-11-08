@@ -62,13 +62,24 @@
   #compose { display: none; gap: 8px; margin-top: 10px; align-items: flex-end; }
   #compose textarea { flex: 1; min-height: 40px; max-height: 160px; resize: vertical; padding: 7px 9px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--text); font: inherit; }
   #compose-error { margin-top: 4px; }
+  header #who { margin-left: auto; display: flex; gap: 10px; align-items: baseline; }
+  .link { background: none; border: none; color: var(--accent); padding: 0; cursor: pointer; font: inherit; }
+  input[type=password] { width: 100%; padding: 7px 9px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--text); font: inherit; }
+  .card { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; margin-top: 8px; }
+  .card .top { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+  .card .checks { margin-top: 6px; }
+  .small { padding: 4px 10px; font-size: 12px; }
+  .ok { color: var(--ok); font-size: 13px; margin-top: 8px; }
+  .hidden { display: none !important; }
 </style>
 </head>
 <body>
-<header><h1>IMV</h1><span>Agents en réunion — serveur local</span></header>
+<header><h1>IMV</h1><span id="subtitle" title="Connexion obligatoire dès qu'un utilisateur existe (imo_agent.py user add … --role admin), au redémarrage du serveur">Agents en réunion — serveur local, sans connexion</span>
+  <div id="who" class="hidden"><span id="who-name"></span><button class="link" id="logout">Déconnexion</button></div>
+</header>
 <main>
   <div style="display:flex;flex-direction:column;gap:16px;min-width:0">
-    <section>
+    <section id="new-agent" class="hidden">
       <h2>Nouvel agent</h2>
       <form id="form">
         <label for="url">Lien de la réunion Teams</label>
@@ -77,6 +88,10 @@
         <input id="name" type="text" placeholder="IMV - Oscar">
         <label for="im">Responsable(s) d'IMV, séparés par des virgules</label>
         <input id="im" type="text" placeholder="La première personne qui tape une commande">
+        <div id="group-box" class="hidden">
+          <label for="group">Groupe (qui voit et pilote cette réunion)</label>
+          <select id="group"></select>
+        </div>
         <label for="incident">Référence de l'incident</label>
         <input id="incident" type="text" placeholder="Facultatif">
         <label for="captions-language">Langue de la réunion (sous-titres et messages de l'agent)</label>
@@ -100,6 +115,59 @@
       <h2>Sessions</h2>
       <div class="list" id="list"><div class="empty">Aucune session.</div></div>
     </section>
+    <section id="account" class="hidden">
+      <details>
+        <summary>Mon mot de passe</summary>
+        <form id="password-form">
+          <label for="pw-current">Mot de passe actuel</label>
+          <input id="pw-current" type="password" autocomplete="current-password" required>
+          <label for="pw-new">Nouveau mot de passe (10 caractères minimum)</label>
+          <input id="pw-new" type="password" autocomplete="new-password" minlength="10" required>
+          <div class="row"><span></span><button>Changer</button></div>
+          <div class="error" id="pw-error"></div><div class="ok" id="pw-ok"></div>
+        </form>
+      </details>
+      <details id="tokens-box">
+        <summary>Mes jetons d'API</summary>
+        <div class="hint">Pour les scripts : en-tête <code>Authorization: Bearer &lt;jeton&gt;</code>, avec vos droits. <a href="/api/docs" target="_blank">Documentation de l'API</a></div>
+        <div id="tokens"></div>
+        <form id="token-form">
+          <label for="token-name">Usage du jeton</label>
+          <input id="token-name" type="text" required maxlength="100" placeholder="ex. supervision">
+          <label for="token-days">Validité</label>
+          <select id="token-days"><option value="30">30 jours</option><option value="90" selected>90 jours</option><option value="365">1 an</option><option value="">Sans expiration</option></select>
+          <div class="row"><span></span><button>Créer</button></div>
+        </form>
+        <div class="error" id="token-error"></div>
+        <div id="token-new" class="hidden"><div class="ok">Jeton créé : copiez-le maintenant, il ne sera plus affiché.</div>
+          <input id="token-value" type="text" readonly onclick="this.select()"></div>
+      </details>
+    </section>
+    <section id="admin" class="hidden">
+      <details id="admin-box">
+        <summary>Administration : utilisateurs et groupes</summary>
+        <div class="error" id="admin-error"></div>
+        <h2 style="margin-top:12px">Groupes</h2>
+        <div id="groups"></div>
+        <form id="group-form" class="row">
+          <input id="group-name" type="text" placeholder="Nouveau groupe" required maxlength="100">
+          <button>Ajouter</button>
+        </form>
+        <h2 style="margin-top:16px">Utilisateurs</h2>
+        <div id="users"></div>
+        <form id="user-form" class="card">
+          <strong>Nouvel utilisateur</strong>
+          <label for="nu-name">Identifiant</label>
+          <input id="nu-name" type="text" required maxlength="100" autocomplete="off">
+          <label for="nu-password">Mot de passe initial (10 caractères minimum)</label>
+          <input id="nu-password" type="password" required minlength="10" autocomplete="new-password">
+          <label for="nu-role">Rôle</label>
+          <select id="nu-role"></select>
+          <div class="checks" id="nu-groups"></div>
+          <div class="row"><span></span><button>Créer</button></div>
+        </form>
+      </details>
+    </section>
   </div>
   <section id="detail">
     <div class="error" id="action-error"></div>
@@ -114,7 +182,10 @@
 </main>
 <script>
 const STATUS = { joining: "Connexion…", in_meeting: "En réunion", ended: "Terminée", failed: "Échec", interrupted: "Interrompue" };
+const ROLES = { admin: "administrateur", operator: "opérateur", viewer: "lecteur" };
 let selected = null;
+let me = null;  // utilisateur connecté (serveur sans --auth : « local », administrateur)
+const canOperate = () => me && me.role !== "viewer";
 
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -137,6 +208,7 @@ const statusLabel = (m) => m.stopping ? "Arrêt…" : STATUS[m.status] || m.stat
 
 async function api(path, options = {}) {
   const res = await fetch(path, { headers: { "Content-Type": "application/json" }, ...options });
+  if (res.status === 401) { location.href = "/login"; throw new Error("connexion requise"); }
   const body = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(typeof body.detail === "string" ? body.detail : JSON.stringify(body.detail || body));
   return body;
@@ -148,7 +220,151 @@ async function loadOptions() {
     o.providers.map((p) => `<option value="${esc(p)}"${p === o.llm ? " selected" : ""}>${esc(p)}</option>`).join("");
   $("context").textContent = o.context ? `Contexte : ${o.context}` : "Pas de contexte.md";
   if (o.im) $("im").placeholder = o.im;
+  // Groupes où l'utilisateur peut lancer un agent ; un administrateur peut aussi n'en choisir aucun.
+  const current = $("group").value;
+  $("group").innerHTML = o.groups.map((g) => `<option value="${g.id}">${esc(g.name)}</option>`).join("") +
+    (me.role === "admin" ? `<option value="">Sans groupe (administrateurs seulement)</option>` : "");
+  // Choix conservé au rechargement, sinon le premier groupe de l'utilisateur
+  const preferred = current || String(me.groups[0]?.id ?? "");
+  if ([...$("group").options].some((opt) => opt.value === preferred)) $("group").value = preferred;
+  $("group-box").classList.toggle("hidden", !o.groups.length);
 }
+
+async function loadMe() {
+  me = await api("/api/me");
+  $("new-agent").classList.toggle("hidden", !canOperate());
+  if (!me.auth) return;
+  $("subtitle").textContent = "Agents en réunion";
+  $("who-name").textContent = `${me.username} · ${ROLES[me.role] || me.role}` +
+    (me.groups.length ? ` · ${me.groups.map((g) => g.name).join(", ")}` : "");
+  $("who").classList.remove("hidden");
+  $("account").classList.remove("hidden");
+  $("admin").classList.toggle("hidden", me.role !== "admin");
+}
+
+$("logout").onclick = async () => {
+  await fetch("/api/logout", { method: "POST" });
+  location.href = "/login";
+};
+
+$("password-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  $("pw-error").textContent = $("pw-ok").textContent = "";
+  try {
+    await api("/api/me/password", { method: "POST", body: JSON.stringify({ current: $("pw-current").value, new: $("pw-new").value }) });
+    $("pw-current").value = $("pw-new").value = "";
+    $("pw-ok").textContent = "Mot de passe changé (vos autres connexions sont fermées).";
+  } catch (err) {
+    $("pw-error").textContent = err.message;
+  }
+});
+
+// -- jetons d'API --
+async function loadTokens() {
+  const tokens = await api("/api/tokens");
+  $("tokens").innerHTML = tokens.map((t) => `
+    <div class="card"><div class="top"><span><strong>${esc(t.name)}</strong> <span class="hint">${esc(t.prefix)}…</span></span>
+      <button class="secondary small" data-revoke="${t.id}">Révoquer</button></div>
+      <div class="hint">Créé le ${esc(when(t.created_at))} · ${t.expires_at ? `expire le ${esc(new Date(t.expires_at).toLocaleDateString("fr-FR"))}` : "sans expiration"} · ${t.last_used_at ? `utilisé ${esc(when(t.last_used_at))}` : "jamais utilisé"}</div></div>`).join("");
+  for (const b of $("tokens").querySelectorAll("[data-revoke]")) {
+    b.onclick = async () => {
+      if (!confirm("Révoquer ce jeton ? Les scripts qui l'utilisent n'auront plus accès.")) return;
+      try { await api(`/api/tokens/${b.dataset.revoke}`, { method: "DELETE" }); $("token-new").classList.add("hidden"); await loadTokens(); }
+      catch (err) { $("token-error").textContent = err.message; }
+    };
+  }
+}
+$("tokens-box").addEventListener("toggle", () => { if ($("tokens-box").open) loadTokens().catch((err) => { $("token-error").textContent = err.message; }); });
+$("token-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  $("token-error").textContent = "";
+  try {
+    const t = await api("/api/tokens", { method: "POST", body: JSON.stringify({ name: $("token-name").value.trim(), days: $("token-days").value ? Number($("token-days").value) : null }) });
+    $("token-name").value = "";
+    $("token-value").value = t.token;
+    $("token-new").classList.remove("hidden");
+    $("token-value").select();
+    await loadTokens();
+  } catch (err) {
+    $("token-error").textContent = err.message;
+  }
+});
+
+// -- administration (rechargée après chaque action, pas toutes les 2 s) --
+let adminGroups = [];
+const groupChecks = (checked = []) => adminGroups.length
+  ? adminGroups.map((g) => `<label><input type="checkbox" data-group="${g.id}"${checked.includes(g.id) ? " checked" : ""}> ${esc(g.name)}</label>`).join("")
+  : `<span class="hint">Aucun groupe : créez-en un ci-dessus.</span>`;
+const checkedGroups = (el) => [...el.querySelectorAll("input[data-group]:checked")].map((c) => Number(c.dataset.group));
+const roleOptions = (role) => Object.entries(ROLES).map(([v, label]) => `<option value="${v}"${v === role ? " selected" : ""}>${label}</option>`).join("");
+
+async function adminAction(fn) {
+  $("admin-error").textContent = "";
+  try { await fn(); await loadAdmin(); await loadOptions(); } catch (err) { $("admin-error").textContent = err.message; }
+}
+
+async function loadAdmin() {
+  const [groups, users] = await Promise.all([api("/api/groups"), api("/api/users")]);
+  adminGroups = groups;
+  $("groups").innerHTML = groups.length ? groups.map((g) => `
+    <div class="card"><div class="top"><span><strong>${esc(g.name)}</strong> <span class="hint">${g.members} membre(s) · ${g.sessions} réunion(s)</span></span>
+      <button class="secondary small" data-delete-group="${g.id}">Supprimer</button></div></div>`).join("")
+    : `<div class="hint">Aucun groupe.</div>`;
+  for (const b of $("groups").querySelectorAll("[data-delete-group]")) {
+    b.onclick = () => {
+      const g = groups.find((x) => x.id === Number(b.dataset.deleteGroup));
+      if (confirm(`Supprimer le groupe « ${g.name} » ? Ses réunions resteront visibles des administrateurs seulement.`)) {
+        adminAction(() => api(`/api/groups/${g.id}`, { method: "DELETE" }));
+      }
+    };
+  }
+  $("users").innerHTML = users.map((u) => `
+    <div class="card" data-user="${u.id}">
+      <div class="top"><strong>${esc(u.username)}${u.id === me.id ? " (vous)" : ""}</strong>
+        <select data-role style="width:auto">${roleOptions(u.role)}</select></div>
+      <div class="checks">${groupChecks(u.groups.map((g) => g.id))}</div>
+      <input type="password" data-password placeholder="Nouveau mot de passe (facultatif)" autocomplete="new-password" style="margin-top:6px">
+      <div class="row" style="margin-top:6px">
+        ${u.id === me.id ? "<span></span>" : `<button class="secondary small" data-delete>Supprimer</button>`}
+        <button class="small" data-save>Enregistrer</button></div>
+    </div>`).join("");
+  for (const card of $("users").querySelectorAll("[data-user]")) {
+    const id = Number(card.dataset.user), user = users.find((u) => u.id === id);
+    card.querySelector("[data-save]").onclick = () => adminAction(async () => {
+      const password = card.querySelector("[data-password]").value;
+      await api(`/api/users/${id}`, { method: "PATCH", body: JSON.stringify({
+        role: card.querySelector("[data-role]").value, group_ids: checkedGroups(card), password: password || null,
+      }) });
+      if (id === me.id) await loadMe();
+    });
+    const del = card.querySelector("[data-delete]");
+    if (del) del.onclick = () => {
+      if (confirm(`Supprimer l'utilisateur « ${user.username} » ?`)) adminAction(() => api(`/api/users/${id}`, { method: "DELETE" }));
+    };
+  }
+  $("nu-role").innerHTML = roleOptions("operator");
+  $("nu-groups").innerHTML = groupChecks(checkedGroups($("nu-groups")));
+}
+
+$("admin-box").addEventListener("toggle", () => { if ($("admin-box").open) adminAction(async () => {}); });
+$("group-form").addEventListener("submit", (e) => {
+  e.preventDefault();
+  adminAction(async () => {
+    await api("/api/groups", { method: "POST", body: JSON.stringify({ name: $("group-name").value.trim() }) });
+    $("group-name").value = "";
+  });
+});
+$("user-form").addEventListener("submit", (e) => {
+  e.preventDefault();
+  adminAction(async () => {
+    await api("/api/users", { method: "POST", body: JSON.stringify({
+      username: $("nu-name").value.trim(), password: $("nu-password").value,
+      role: $("nu-role").value, group_ids: checkedGroups($("nu-groups")),
+    }) });
+    $("nu-name").value = $("nu-password").value = "";
+    for (const c of $("nu-groups").querySelectorAll("input:checked")) c.checked = false;
+  });
+});
 
 $("form").addEventListener("submit", async (e) => {
   e.preventDefault();
@@ -167,6 +383,7 @@ $("form").addEventListener("submit", async (e) => {
         captions_language: $("captions-language").value || null,
         avatar: $("avatar").checked,
         welcome: $("welcome").checked,
+        group_id: $("group-box").classList.contains("hidden") || !$("group").value ? null : Number($("group").value),
       }),
     });
     $("url").value = "";
@@ -184,7 +401,7 @@ function renderList(meetings) {
   $("list").innerHTML = meetings.map((m) => `
     <div class="item${m.id === selected ? " selected" : ""}" data-id="${m.id}">
       <div class="top"><strong>#${m.id} ${esc(m.name)}</strong><span class="status s-${esc(m.status)}">${esc(statusLabel(m))}</span></div>
-      <div class="when">${esc(when(m.created_at))}${m.messages ? ` · ${m.messages} message(s)` : ""}</div>
+      <div class="when">${esc(when(m.created_at))}${m.messages ? ` · ${m.messages} message(s)` : ""}${m.group ? ` · ${esc(m.group)}` : ""}</div>
       <div class="url">${esc(m.incident ? m.incident + " · " : "")}${esc(m.url)}</div>
     </div>`).join("");
   for (const el of $("list").querySelectorAll(".item")) {
@@ -221,9 +438,9 @@ function renderDetail(data) {
     m.incident && `Incident ${m.incident}`,
     `Début ${when(m.created_at)}`,
     m.ended_at && `Fin ${when(m.ended_at)}`,
-  ]).concat(`${m.messages} message(s)`).filter(Boolean);
+  ]).concat(`${m.messages} message(s)`, m.group && `Groupe ${m.group}`, m.created_by && `Lancée par ${m.created_by}`).filter(Boolean);
   const active = m.live && !m.stopping;
-  const canWrite = active && m.status === "in_meeting";
+  const canWrite = active && m.status === "in_meeting" && canOperate();
   $("compose").style.display = canWrite ? "flex" : "none";
   if (!canWrite) $("compose-error").textContent = "";
   const scroll = { feed: keepScroll("feed"), events: keepScroll("events") };
@@ -232,7 +449,7 @@ function renderDetail(data) {
   $("detail-body").innerHTML = `
     <div class="row" style="margin-top:0">
       <h2 style="margin:0">#${m.id} ${esc(m.name)} — <span class="status s-${esc(m.status)}">${esc(statusLabel(m))}</span></h2>
-      ${m.live ? `<button class="secondary" id="stop"${active ? "" : " disabled"}>Quitter la réunion</button>`
+      ${!canOperate() ? "" : m.live ? `<button class="secondary" id="stop"${active ? "" : " disabled"}>Quitter la réunion</button>`
         : m.restartable
           ? `<button id="restart" title="Nouvelle session avec le même lien, le même nom et les mêmes options">Relancer</button>`
           : `<button id="prefill" title="Session antérieure à l'enregistrement des options : lien et nom repris dans le formulaire, options à choisir">Reprendre dans le formulaire</button>`}
@@ -299,9 +516,13 @@ $("compose-text").addEventListener("keydown", (e) => {
   if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); sendToChat(); }
 });
 
-loadOptions().catch((err) => { $("form-error").textContent = err.message; });
-refresh();
-setInterval(refresh, 2000);
+loadMe()
+  .then(() => {
+    loadOptions().catch((err) => { $("form-error").textContent = err.message; });
+    refresh();
+    setInterval(refresh, 2000);
+  })
+  .catch((err) => { $("action-error").textContent = err.message; });
 </script>
 </body>
 </html>

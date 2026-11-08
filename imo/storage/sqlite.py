@@ -1,11 +1,14 @@
-"""Persistance SQLite : sessions, incidents, messages et interventions de l'agent."""
+"""Persistance SQLite : sessions, incidents, messages et interventions de l'agent ; utilisateurs,
+groupes et connexions du serveur web."""
 
 from __future__ import annotations
 
 import json
 import sqlite3
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from imo.auth import User
 from imo.models import ChatMessage, utc_now
 
 SCHEMA = """
@@ -28,7 +31,9 @@ CREATE TABLE IF NOT EXISTS sessions (
     created_at   TEXT NOT NULL,
     joined_at    TEXT,
     ended_at     TEXT,
-    options      TEXT                    -- JSON : options de lancement, pour relancer la session
+    options      TEXT,                   -- JSON : options de lancement, pour relancer la session
+    group_id     INTEGER REFERENCES groups(id) ON DELETE SET NULL,  -- NULL : visible des admins seuls
+    created_by   TEXT                    -- utilisateur du serveur web qui a lancé l'agent
 );
 CREATE TABLE IF NOT EXISTS messages (
     id               INTEGER PRIMARY KEY,
@@ -52,7 +57,48 @@ CREATE TABLE IF NOT EXISTS interventions (
     delivered   INTEGER NOT NULL,        -- 0 si le chat est en lecture seule
     timestamp   TEXT NOT NULL
 );
+-- Utilisateurs du serveur web (voir imo/auth.py)
+CREATE TABLE IF NOT EXISTS users (
+    id            INTEGER PRIMARY KEY,
+    username      TEXT NOT NULL UNIQUE COLLATE NOCASE,
+    password_hash TEXT NOT NULL,
+    role          TEXT NOT NULL,         -- admin | operator | viewer
+    created_at    TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS groups (
+    id         INTEGER PRIMARY KEY,
+    name       TEXT NOT NULL UNIQUE COLLATE NOCASE,
+    created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS user_groups (
+    user_id  INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    group_id INTEGER NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+    PRIMARY KEY (user_id, group_id)
+);
+CREATE TABLE IF NOT EXISTS logins (
+    token_hash TEXT PRIMARY KEY,         -- empreinte SHA-256 du jeton du cookie
+    user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS api_tokens (
+    id           INTEGER PRIMARY KEY,
+    user_id      INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    name         TEXT NOT NULL,          -- usage, choisi par l'utilisateur (« supervision », « script astreinte »)
+    token_hash   TEXT NOT NULL UNIQUE,   -- empreinte SHA-256 du jeton, montré une seule fois
+    prefix       TEXT NOT NULL,          -- début du jeton, pour le reconnaître dans la liste
+    created_at   TEXT NOT NULL,
+    expires_at   TEXT,                   -- NULL : sans expiration
+    last_used_at TEXT
+);
 """
+
+# Colonnes ajoutées après coup à des bases existantes
+_ADDED_COLUMNS = {
+    "options": "TEXT",
+    "group_id": "INTEGER REFERENCES groups(id) ON DELETE SET NULL",
+    "created_by": "TEXT",
+}
 
 
 class Store:
@@ -63,21 +109,36 @@ class Store:
         self.db.row_factory = sqlite3.Row
         self.db.execute("PRAGMA foreign_keys = ON")
         self.db.executescript(SCHEMA)
-        # Bases créées avant l'ajout de la colonne options
-        if "options" not in {row["name"] for row in self.db.execute("PRAGMA table_info(sessions)")}:
-            self.db.execute("ALTER TABLE sessions ADD COLUMN options TEXT")
+        columns = {row["name"] for row in self.db.execute("PRAGMA table_info(sessions)")}
+        for name, definition in _ADDED_COLUMNS.items():
+            if name not in columns:
+                self.db.execute(f"ALTER TABLE sessions ADD COLUMN {name} {definition}")
 
     def close(self) -> None:
         self.db.close()
 
     # -- sessions ---------------------------------------------------------
 
-    def create_session(self, meeting_url: str, display_name: str, options: dict | None = None) -> int:
+    def create_session(
+        self,
+        meeting_url: str,
+        display_name: str,
+        options: dict | None = None,
+        group_id: int | None = None,
+        created_by: str | None = None,
+    ) -> int:
         with self.db:
             cur = self.db.execute(
-                "INSERT INTO sessions (meeting_url, display_name, status, created_at, options) "
-                "VALUES (?, ?, 'joining', ?, ?)",
-                (meeting_url, display_name, utc_now(), json.dumps(options) if options is not None else None),
+                "INSERT INTO sessions (meeting_url, display_name, status, created_at, options, group_id, created_by) "
+                "VALUES (?, ?, 'joining', ?, ?, ?, ?)",
+                (
+                    meeting_url,
+                    display_name,
+                    utc_now(),
+                    json.dumps(options) if options is not None else None,
+                    group_id,
+                    created_by,
+                ),
             )
         return cur.lastrowid
 
@@ -97,20 +158,29 @@ class Store:
                 (status, error_code, status, now, status, now, session_id),
             )
 
-    def list_sessions(self) -> list[sqlite3.Row]:
+    def list_sessions(self, group_ids: list[int] | None = None) -> list[sqlite3.Row]:
+        """Toutes les sessions, ou seulement celles des groupes donnés."""
+        where, params = "", ()
+        if group_ids is not None:
+            where = f"WHERE s.group_id IN ({','.join('?' * len(group_ids))})"
+            params = tuple(group_ids)
         return self.db.execute(
-            """SELECT s.id, s.created_at, s.joined_at, s.ended_at, s.status, s.error_code, s.meeting_url,
-                      s.display_name,
-                      i.ref AS incident_ref,
+            f"""SELECT s.id, s.created_at, s.joined_at, s.ended_at, s.status, s.error_code, s.meeting_url,
+                      s.display_name, s.group_id, s.created_by,
+                      i.ref AS incident_ref, g.name AS group_name,
                       (SELECT COUNT(*) FROM messages m WHERE m.session_id = s.id) AS message_count
                FROM sessions s LEFT JOIN incidents i ON i.id = s.incident_id
-               ORDER BY s.id"""
+                               LEFT JOIN groups g ON g.id = s.group_id
+               {where}
+               ORDER BY s.id""",
+            params,
         ).fetchall()
 
     def session(self, session_id: int) -> sqlite3.Row | None:
         return self.db.execute(
-            """SELECT s.*, i.ref AS incident_ref FROM sessions s
-               LEFT JOIN incidents i ON i.id = s.incident_id WHERE s.id = ?""",
+            """SELECT s.*, i.ref AS incident_ref, g.name AS group_name FROM sessions s
+               LEFT JOIN incidents i ON i.id = s.incident_id
+               LEFT JOIN groups g ON g.id = s.group_id WHERE s.id = ?""",
             (session_id,),
         ).fetchone()
 
@@ -186,3 +256,170 @@ class Store:
         return self.db.execute(
             "SELECT * FROM interventions WHERE session_id = ? ORDER BY id", (session_id,)
         ).fetchall()
+
+    # -- utilisateurs et groupes du serveur web ----------------------------
+
+    def _groups_of(self, user_id: int) -> dict[int, str]:
+        return {
+            row["id"]: row["name"]
+            for row in self.db.execute(
+                "SELECT g.id, g.name FROM groups g JOIN user_groups ug ON ug.group_id = g.id WHERE ug.user_id = ?",
+                (user_id,),
+            )
+        }
+
+    def _user(self, row: sqlite3.Row | None) -> User | None:
+        return User(row["id"], row["username"], row["role"], self._groups_of(row["id"])) if row else None
+
+    def create_user(self, username: str, password_hash: str, role: str, group_ids: list[int] = ()) -> int:
+        try:
+            with self.db:
+                cur = self.db.execute(
+                    "INSERT INTO users (username, password_hash, role, created_at) VALUES (?, ?, ?, ?)",
+                    (username, password_hash, role, utc_now()),
+                )
+                self._set_groups(cur.lastrowid, group_ids)
+        except sqlite3.IntegrityError as exc:
+            raise ValueError(f"l'utilisateur {username} existe déjà, ou groupe inconnu") from exc
+        return cur.lastrowid
+
+    def _set_groups(self, user_id: int, group_ids: list[int]) -> None:
+        self.db.execute("DELETE FROM user_groups WHERE user_id = ?", (user_id,))
+        self.db.executemany(
+            "INSERT INTO user_groups (user_id, group_id) VALUES (?, ?)", [(user_id, g) for g in set(group_ids)]
+        )
+
+    def update_user(
+        self,
+        user_id: int,
+        *,
+        role: str | None = None,
+        password_hash: str | None = None,
+        group_ids: list[int] | None = None,
+    ) -> None:
+        """Un nouveau mot de passe déconnecte toutes les sessions de l'utilisateur."""
+        try:
+            with self.db:
+                if role is not None:
+                    self.db.execute("UPDATE users SET role = ? WHERE id = ?", (role, user_id))
+                if password_hash is not None:
+                    self.db.execute("UPDATE users SET password_hash = ? WHERE id = ?", (password_hash, user_id))
+                    self.db.execute("DELETE FROM logins WHERE user_id = ?", (user_id,))
+                if group_ids is not None:
+                    self._set_groups(user_id, group_ids)
+        except sqlite3.IntegrityError as exc:
+            raise ValueError("groupe inconnu") from exc
+
+    def delete_user(self, user_id: int) -> None:
+        with self.db:
+            self.db.execute("DELETE FROM users WHERE id = ?", (user_id,))
+
+    def user(self, user_id: int) -> User | None:
+        return self._user(self.db.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone())
+
+    def user_by_name(self, username: str) -> User | None:
+        return self._user(self.db.execute("SELECT * FROM users WHERE username = ?", (username,)).fetchone())
+
+    def password_hash(self, user_id: int) -> str | None:
+        row = self.db.execute("SELECT password_hash FROM users WHERE id = ?", (user_id,)).fetchone()
+        return row["password_hash"] if row else None
+
+    def users(self) -> list[User]:
+        return [self._user(row) for row in self.db.execute("SELECT * FROM users ORDER BY username")]
+
+    def count_admins(self) -> int:
+        return self.db.execute("SELECT COUNT(*) FROM users WHERE role = 'admin'").fetchone()[0]
+
+    def create_group(self, name: str) -> int:
+        try:
+            with self.db:
+                cur = self.db.execute("INSERT INTO groups (name, created_at) VALUES (?, ?)", (name, utc_now()))
+        except sqlite3.IntegrityError as exc:
+            raise ValueError(f"le groupe {name} existe déjà") from exc
+        return cur.lastrowid
+
+    def groups(self) -> list[sqlite3.Row]:
+        return self.db.execute(
+            """SELECT g.id, g.name,
+                      (SELECT COUNT(*) FROM user_groups ug WHERE ug.group_id = g.id) AS members,
+                      (SELECT COUNT(*) FROM sessions s WHERE s.group_id = g.id) AS sessions
+               FROM groups g ORDER BY g.name"""
+        ).fetchall()
+
+    def group(self, group_id: int) -> sqlite3.Row | None:
+        return self.db.execute("SELECT * FROM groups WHERE id = ?", (group_id,)).fetchone()
+
+    def group_by_name(self, name: str) -> sqlite3.Row | None:
+        return self.db.execute("SELECT * FROM groups WHERE name = ?", (name,)).fetchone()
+
+    def delete_group(self, group_id: int) -> None:
+        """Ses réunions restent, sans groupe : visibles des admins seuls."""
+        with self.db:
+            self.db.execute("DELETE FROM groups WHERE id = ?", (group_id,))
+
+    # -- connexions au serveur web ------------------------------------------
+
+    def add_login(self, token_hash: str, user_id: int, days: int) -> None:
+        now = datetime.now(timezone.utc)
+        with self.db:
+            self.db.execute("DELETE FROM logins WHERE expires_at < ?", (now.isoformat(timespec="seconds"),))
+            self.db.execute(
+                "INSERT INTO logins (token_hash, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)",
+                (token_hash, user_id, utc_now(), (now + timedelta(days=days)).isoformat(timespec="seconds")),
+            )
+
+    def login_user(self, token_hash: str) -> User | None:
+        """Utilisateur d'une connexion en cours ; None si le jeton est inconnu ou expiré."""
+        row = self.db.execute(
+            "SELECT u.* FROM logins l JOIN users u ON u.id = l.user_id WHERE l.token_hash = ? AND l.expires_at >= ?",
+            (token_hash, utc_now()),
+        ).fetchone()
+        return self._user(row)
+
+    def delete_login(self, token_hash: str) -> None:
+        with self.db:
+            self.db.execute("DELETE FROM logins WHERE token_hash = ?", (token_hash,))
+
+    # -- jetons d'API ---------------------------------------------------------
+
+    def add_api_token(self, user_id: int, name: str, token_hash: str, prefix: str, days: int | None) -> int:
+        now = datetime.now(timezone.utc)
+        expires = (now + timedelta(days=days)).isoformat(timespec="seconds") if days else None
+        with self.db:
+            cur = self.db.execute(
+                "INSERT INTO api_tokens (user_id, name, token_hash, prefix, created_at, expires_at) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (user_id, name, token_hash, prefix, utc_now(), expires),
+            )
+        return cur.lastrowid
+
+    def api_tokens(self, user_id: int | None = None) -> list[sqlite3.Row]:
+        """Jetons d'un utilisateur, ou de tous ; sans leur empreinte."""
+        where, params = ("WHERE t.user_id = ?", (user_id,)) if user_id is not None else ("", ())
+        return self.db.execute(
+            f"""SELECT t.id, t.user_id, u.username, t.name, t.prefix, t.created_at, t.expires_at, t.last_used_at
+                FROM api_tokens t JOIN users u ON u.id = t.user_id {where} ORDER BY t.id""",
+            params,
+        ).fetchall()
+
+    def api_token(self, token_id: int) -> sqlite3.Row | None:
+        return self.db.execute("SELECT id, user_id, name FROM api_tokens WHERE id = ?", (token_id,)).fetchone()
+
+    def api_token_user(self, token_hash: str) -> tuple[User, int] | None:
+        """(utilisateur, id du jeton) pour un jeton valide ; None s'il est inconnu ou expiré."""
+        now = utc_now()
+        row = self.db.execute(
+            """SELECT u.*, t.id AS token_id, t.last_used_at FROM api_tokens t JOIN users u ON u.id = t.user_id
+               WHERE t.token_hash = ? AND (t.expires_at IS NULL OR t.expires_at >= ?)""",
+            (token_hash, now),
+        ).fetchone()
+        if row is None:
+            return None
+        if (row["last_used_at"] or "")[:16] != now[:16]:  # au plus une écriture par minute
+            with self.db:
+                self.db.execute("UPDATE api_tokens SET last_used_at = ? WHERE id = ?", (now, row["token_id"]))
+        return self._user(row), row["token_id"]
+
+    def delete_api_token(self, token_id: int) -> None:
+        with self.db:
+            self.db.execute("DELETE FROM api_tokens WHERE id = ?", (token_id,))

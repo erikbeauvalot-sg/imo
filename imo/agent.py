@@ -499,7 +499,32 @@ class IncidentAgent:
             " This person hasn't written in the chat yet: their name must be exactly the one shown by Teams.",
         )
 
+    async def api_command(self, text: str, requester: str) -> tuple[Command, str, bool]:
+        """Commande envoyée par l'API du serveur web (« résumé », « com direction », « clore »…),
+        sans contrôle des responsables de la réunion : les droits sont ceux de l'utilisateur du
+        serveur. La réponse est publiée dans le chat ; renvoie (commande, réponse, publiée).
+        ValueError si la commande est inconnue ou impossible."""
+        command = parse_command(f"imv {text}")
+        if command is None or not text.strip() or not self._known(command.verb):
+            raise ValueError(f"commande inconnue : {text.strip()!r} (voir « aide »)")
+        log.info("Commande « imv %s » reçue par l'API (%s)", command.word, requester)
+        if command.verb == "clore":
+            if self.closing:
+                raise ValueError("clôture déjà en cours")
+            self._background(self._close(requester))
+            return command, self._t("Clôture en cours.", "Closing in progress."), True
+        if command.verb in TASKS:
+            if self.llm is None:
+                raise ValueError("l'analyse n'est pas activée pour cette session (pas de LLM)")
+            text = await self._analysis_text(command, requester)
+        else:
+            text = getattr(self, f"_cmd_{command.verb}")(command.arg, requester)
+        return command, text, await self.reply(text, kind="api")
+
     async def _analyze(self, command: Command, author: str) -> None:
+        await self.reply(await self._analysis_text(command, author))
+
+    async def _analysis_text(self, command: Command, author: str) -> str:
         assert self.llm is not None
         incident = self.store.session_incident(self.session_id)
         try:
@@ -525,7 +550,7 @@ class IncidentAgent:
                 f"Analyse « {command.word} » impossible pour le moment ({exc}).",
                 f"“{command.word}” analysis unavailable for now ({exc}).",
             )
-        await self.reply(text or self._t(f"Analyse « {command.word} » : réponse vide.", f"“{command.word}” analysis: empty answer."))
+        return text or self._t(f"Analyse « {command.word} » : réponse vide.", f"“{command.word}” analysis: empty answer.")
 
     def _background(self, coro) -> None:
         """Analyse LLM en tâche de fond : la lecture du chat continue pendant ce temps."""

@@ -1,9 +1,10 @@
-"""Ligne de commande : imo_agent.py join <url> | serve | history [session] | analyze | check-llm."""
+"""Ligne de commande : imo_agent.py join <url> | serve | history [session] | analyze | check-llm | user | group | token."""
 
 from __future__ import annotations
 
 import argparse
 import asyncio
+import getpass
 import logging
 import os
 import signal
@@ -13,6 +14,7 @@ from pathlib import Path
 from dotenv import find_dotenv, load_dotenv
 
 from imo.analysis import TASKS, analyze, load_context
+from imo.auth import ROLE_LABELS, ROLES, check_password, hash_password, new_api_token, token_hash
 from imo.connectors.teams import TeamsJoinError
 from imo.llm import PROVIDERS, LLMError, make_llm
 from imo.llm.providers import DEFAULT_MODELS
@@ -78,8 +80,34 @@ def build_parser() -> argparse.ArgumentParser:
     join.add_argument("--debug-dir", type=Path, default=Path("debug"), help="Captures en cas d'échec")
     join.add_argument("-v", "--verbose", action="store_true")
 
-    serve = sub.add_parser("serve", help="Serveur web local : lancer et suivre plusieurs agents à la fois")
-    serve.add_argument("--port", type=int, default=8765, help="Port sur 127.0.0.1 (défaut : 8765)")
+    serve = sub.add_parser("serve", help="Serveur web : lancer et suivre plusieurs agents à la fois")
+    serve.add_argument("--port", type=int, default=8765, help="Port (défaut : 8765)")
+    serve.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help="Adresse d'écoute (défaut : 127.0.0.1 ; derrière un proxy HTTPS, gardez 127.0.0.1)",
+    )
+    auth = serve.add_mutually_exclusive_group()
+    auth.add_argument(
+        "--auth",
+        action="store_true",
+        default=None,
+        help="Connexion obligatoire (utilisateurs et groupes : commandes « user » et « group »). "
+        "Par défaut : obligatoire dès qu'un utilisateur existe dans la base",
+    )
+    auth.add_argument(
+        "--no-auth",
+        dest="auth",
+        action="store_false",
+        help="Sans connexion, même si des utilisateurs existent (poste local, 127.0.0.1 seulement)",
+    )
+    serve.add_argument(
+        "--allowed-host",
+        action="append",
+        default=[],
+        metavar="NOM",
+        help="Nom de domaine sous lequel le serveur est joint, en plus de 127.0.0.1 et localhost (option répétable)",
+    )
     _add_llm_arguments(serve, required=False)
     serve.add_argument("--db", type=Path, default=DEFAULT_DB, help=f"Base SQLite (défaut : {DEFAULT_DB})")
     serve.add_argument("--show", action="store_true", help="Afficher les fenêtres des navigateurs (diagnostic)")
@@ -101,6 +129,50 @@ def build_parser() -> argparse.ArgumentParser:
     _add_llm_arguments(analyze_cmd, required=True)
     analyze_cmd.add_argument("--db", type=Path, default=DEFAULT_DB)
     analyze_cmd.add_argument("-v", "--verbose", action="store_true")
+
+    # --db après l'action (« user add erik --db … ») : options communes à chaque action
+    db_option = argparse.ArgumentParser(add_help=False)
+    db_option.add_argument("--db", type=Path, default=DEFAULT_DB, help=f"Base SQLite (défaut : {DEFAULT_DB})")
+    db_option.add_argument("-v", "--verbose", action="store_true", help=argparse.SUPPRESS)
+
+    user = sub.add_parser("user", help="Utilisateurs du serveur web (connexion obligatoire dès le premier)")
+    user_sub = user.add_subparsers(dest="action", required=True)
+    user_add = user_sub.add_parser("add", parents=[db_option], help="Créer un utilisateur (mot de passe demandé)")
+    user_add.add_argument("username")
+    user_add.add_argument("--role", choices=ROLES, default="operator", help="Rôle (défaut : operator)")
+    user_add.add_argument("--group", action="append", default=[], metavar="GROUPE",
+                          help="Groupe (option répétable ; créé s'il n'existe pas)")
+    user_set = user_sub.add_parser("set", parents=[db_option], help="Changer le rôle ou les groupes d'un utilisateur")
+    user_set.add_argument("username")
+    user_set.add_argument("--role", choices=ROLES)
+    user_set.add_argument("--group", action="append", metavar="GROUPE",
+                          help="Groupes, qui remplacent les actuels (option répétable ; créés s'ils n'existent pas)")
+    user_passwd = user_sub.add_parser(
+        "passwd", parents=[db_option], help="Changer le mot de passe d'un utilisateur (le déconnecte)"
+    )
+    user_passwd.add_argument("username")
+    user_sub.add_parser("del", parents=[db_option], help="Supprimer un utilisateur").add_argument("username")
+    user_sub.add_parser("list", parents=[db_option], help="Lister les utilisateurs")
+
+    group = sub.add_parser("group", help="Groupes du serveur web : chaque réunion appartient à un groupe")
+    group_sub = group.add_subparsers(dest="action", required=True)
+    group_sub.add_parser("add", parents=[db_option], help="Créer un groupe").add_argument("name")
+    group_sub.add_parser(
+        "del", parents=[db_option], help="Supprimer un groupe (ses réunions restent, visibles des admins)"
+    ).add_argument("name")
+    group_sub.add_parser("list", parents=[db_option], help="Lister les groupes")
+
+    token = sub.add_parser("token", help="Jetons d'API du serveur web (en-tête Authorization: Bearer …)")
+    token_sub = token.add_subparsers(dest="action", required=True)
+    token_add = token_sub.add_parser(
+        "add", parents=[db_option], help="Créer un jeton, avec les droits de l'utilisateur (affiché une seule fois)"
+    )
+    token_add.add_argument("username")
+    token_add.add_argument("--name", required=True, help="Usage du jeton (ex. « supervision »)")
+    token_add.add_argument("--days", type=int, help="Validité en jours (défaut : sans expiration)")
+    token_list = token_sub.add_parser("list", parents=[db_option], help="Lister les jetons")
+    token_list.add_argument("username", nargs="?", help="Seulement ceux de cet utilisateur")
+    token_sub.add_parser("del", parents=[db_option], help="Révoquer un jeton").add_argument("id", type=int)
 
     check = sub.add_parser("check-llm", help="Vérifier la connexion au LLM (court message de test)")
     _add_llm_arguments(check, required=True, context=False)
@@ -165,7 +237,26 @@ async def run_join(args: argparse.Namespace) -> int:
 async def run_serve(args: argparse.Namespace) -> int:
     import uvicorn  # importé ici : inutile aux autres commandes
 
-    from imo.server import create_app
+    from imo.server import LOCAL_HOSTS, create_app
+
+    store = Store(args.db)
+    try:
+        users, admins = len(store.users()), store.count_admins()
+    finally:
+        store.close()
+    if args.auth is None:
+        args.auth = users > 0  # un compte a été créé : on s'attend à devoir se connecter
+    if not args.auth and args.host not in LOCAL_HOSTS:
+        print(f"Erreur : --host {args.host} expose le serveur au réseau : ajoutez --auth", file=sys.stderr)
+        return 1
+    if args.auth:
+        if not admins:
+            print(
+                "Erreur : aucun administrateur. Créez-en un : "
+                f"python imo_agent.py user add <identifiant> --role admin --db {args.db}",
+                file=sys.stderr,
+            )
+            return 1
 
     defaults = MeetingConfig(
         url="",
@@ -177,11 +268,121 @@ async def run_serve(args: argparse.Namespace) -> int:
         admission_timeout=args.admission_timeout,
         debug_dir=args.debug_dir,
     )
-    app = create_app(args.db, defaults)
-    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=args.port, log_level="warning"))
-    logging.getLogger("imo").info("IMV : http://127.0.0.1:%s (Ctrl+C pour arrêter)", args.port)
+    app = create_app(args.db, defaults, allowed_hosts=LOCAL_HOSTS + args.allowed_host, auth=args.auth)
+    # proxy_headers : derrière le proxy HTTPS local, X-Forwarded-Proto donne le schéma (cookie Secure).
+    server = uvicorn.Server(
+        uvicorn.Config(app, host=args.host, port=args.port, log_level="warning", proxy_headers=True)
+    )
+    logging.getLogger("imo").info(
+        "IMV : http://%s:%s — %s (Ctrl+C pour arrêter)",
+        args.host,
+        args.port,
+        f"connexion obligatoire ({users} utilisateur(s))" if args.auth
+        else "sans connexion, poste local (« user add … --role admin » pour l'activer)",
+    )
     await server.serve()
     return 0
+
+
+def _ask_password() -> str:
+    password = getpass.getpass("Mot de passe : ")
+    check_password(password)
+    if getpass.getpass("Confirmation : ") != password:
+        raise ValueError("les deux mots de passe diffèrent")
+    return password
+
+
+def _group_ids(store: Store, names: list[str]) -> list[int]:
+    ids = []
+    for name in names:
+        row = store.group_by_name(name)
+        if row is None:
+            print(f"Groupe {name} créé")
+            ids.append(store.create_group(name))
+        else:
+            ids.append(row["id"])
+    return ids
+
+
+def run_user(args: argparse.Namespace) -> int:
+    store = Store(args.db)
+    try:
+        if args.action == "list":
+            for u in store.users():
+                groups = ", ".join(sorted(u.groups.values(), key=str.lower)) or "-"
+                print(f"{u.username:<24} {ROLE_LABELS[u.role]:<16} groupes : {groups}")
+            return 0
+        if args.action == "add":
+            store.create_user(args.username, hash_password(_ask_password()), args.role, _group_ids(store, args.group))
+            print(f"Utilisateur {args.username} créé ({ROLE_LABELS[args.role]})")
+            return 0
+        user = store.user_by_name(args.username)
+        if user is None:
+            raise ValueError(f"utilisateur inconnu : {args.username}")
+        if args.action == "del" or (args.action == "set" and args.role not in (None, "admin")):
+            if user.is_admin and store.count_admins() <= 1:
+                raise ValueError(f"{user.username} est le dernier administrateur")
+        if args.action == "set":
+            groups = None if args.group is None else _group_ids(store, args.group)
+            store.update_user(user.id, role=args.role, group_ids=groups)
+        elif args.action == "passwd":
+            store.update_user(user.id, password_hash=hash_password(_ask_password()))
+        elif args.action == "del":
+            store.delete_user(user.id)
+        print(f"Utilisateur {user.username} : {'supprimé' if args.action == 'del' else 'modifié'}")
+        return 0
+    finally:
+        store.close()
+
+
+def run_token(args: argparse.Namespace) -> int:
+    store = Store(args.db)
+    try:
+        if args.action == "del":
+            if store.api_token(args.id) is None:
+                raise ValueError(f"jeton inconnu : {args.id}")
+            store.delete_api_token(args.id)
+            print(f"Jeton {args.id} révoqué")
+            return 0
+        user = store.user_by_name(args.username) if args.username else None
+        if args.username and user is None:
+            raise ValueError(f"utilisateur inconnu : {args.username}")
+        if args.action == "list":
+            for t in store.api_tokens(user.id if user else None):
+                print(
+                    f"#{t['id']:<4} {t['username']:<20} {t['name']:<24} {t['prefix']}…  "
+                    f"expire : {t['expires_at'] or 'jamais'}  dernier usage : {t['last_used_at'] or '-'}"
+                )
+            return 0
+        if args.days is not None and args.days < 1:
+            raise ValueError("--days doit être positif")
+        token = new_api_token()
+        store.add_api_token(user.id, args.name, token_hash(token), token[:8], args.days)
+        print(f"Jeton « {args.name} » pour {user.username} ({ROLE_LABELS[user.role]}), à conserver : il ne sera plus affiché")
+        print(token)
+        return 0
+    finally:
+        store.close()
+
+
+def run_group(args: argparse.Namespace) -> int:
+    store = Store(args.db)
+    try:
+        if args.action == "list":
+            for g in store.groups():
+                print(f"{g['name']:<24} membres : {g['members']:<4} réunions : {g['sessions']}")
+        elif args.action == "add":
+            store.create_group(args.name)
+            print(f"Groupe {args.name} créé")
+        else:
+            row = store.group_by_name(args.name)
+            if row is None:
+                raise ValueError(f"groupe inconnu : {args.name}")
+            store.delete_group(row["id"])
+            print(f"Groupe {args.name} supprimé")
+        return 0
+    finally:
+        store.close()
 
 
 async def run_analyze(args: argparse.Namespace) -> int:
@@ -243,6 +444,12 @@ def main(argv: list[str] | None = None) -> int:
     )
     if args.command == "history":
         return run_history(args)
+    if args.command in ("user", "group", "token"):
+        try:
+            return {"user": run_user, "group": run_group, "token": run_token}[args.command](args)
+        except ValueError as exc:
+            print(f"Erreur : {exc}", file=sys.stderr)
+            return 1
     runner = {"join": run_join, "serve": run_serve, "analyze": run_analyze, "check-llm": run_check_llm}.get(args.command)
     if runner is None:
         return 1

@@ -54,6 +54,8 @@ class MeetingConfig:
     browser: str | None = None
     admission_timeout: float = 600
     debug_dir: Path | None = Path("debug")
+    group_id: int | None = None  # groupe propriétaire de la réunion (serveur web)
+    created_by: str | None = None  # utilisateur du serveur web qui a lancé l'agent
 
 
 # Réunion en cours dans la tâche asyncio : ses logs lui sont attribués (voir _EventsHandler).
@@ -105,7 +107,9 @@ class MeetingRunner:
             "llm": config.llm,
             "llm_model": config.llm_model,
         }
-        self.session_id = store.create_session(self.session.url, self.session.display_name, options)
+        self.session_id = store.create_session(
+            self.session.url, self.session.display_name, options, config.group_id, config.created_by
+        )
         self.status = "joining"  # joining | in_meeting | ended | failed (comme la base)
         self.error: str | None = None
         self.events: deque[str] = deque(maxlen=200)  # journal propre à cette réunion

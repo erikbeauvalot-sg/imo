@@ -8,3 +8,5 @@ debug/
 contexte.md
 .claude/settings.local.json
 .claude/settings.json
+deploy/data/
+deploy/letsencrypt/

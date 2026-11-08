@@ -144,11 +144,84 @@ d'authentification. Vérifier ensuite avec
 
 La page permet de lancer un agent dans une réunion (lien, nom, responsables, incident, LLM, transcription de la voix, avatar), de suivre chaque réunion en direct (messages du chat, phrases dites à l'oral, réponses d'IMV, journal de l'agent), d'**écrire dans le chat de la réunion** au nom de l'agent, de faire quitter la réunion à un agent, et de **relancer** une session terminée (nouvelle session avec le même lien, le même nom et les mêmes options). L'**historique** des sessions (y compris celles lancées avec `join`) reste consultable après un redémarrage du serveur : il est lu dans la base. Une session restée ouverte lors d'un arrêt brutal apparaît comme « Interrompue » ; le journal de l'agent n'est disponible que pendant la session. Chaque agent a son propre navigateur, caché ; tous partagent la même base (`--db`) et le même `contexte.md`.
 
-- Options : `--port` (défaut 8765), `--llm`/`--llm-model` (fournisseur proposé par défaut dans la page), `--context`, `--browser`, `--show`, `--admission-timeout`, `--debug-dir` (un sous-dossier `session-<n>` par réunion), `-v`.
-- Le serveur n'écoute que `127.0.0.1` et n'a pas d'authentification : il est réservé à votre poste.
+- Options : `--port` (défaut 8765), `--llm`/`--llm-model` (fournisseur proposé par défaut dans la page), `--context`, `--browser`, `--show`, `--admission-timeout`, `--debug-dir` (un sous-dossier `session-<n>` par réunion), `--auth`, `--host`, `--allowed-host`, `-v`.
+- Tant qu'aucun utilisateur n'existe dans la base, le serveur n'écoute que `127.0.0.1` et n'a pas d'authentification : il est réservé à votre poste. **Dès qu'un utilisateur est créé, la connexion devient obligatoire** (au prochain démarrage du serveur). `--no-auth` la désactive malgré tout (poste local seulement) ; `--host` autre que `127.0.0.1` est refusé sans connexion.
 - Les agents tournent dans le processus du serveur : **arrêter ou redémarrer le serveur termine leurs sessions**. Ctrl+C fait quitter proprement la réunion à chaque agent (session « Terminée », arrêtée par le serveur) ; il suffit ensuite de cliquer « Relancer ». Après un arrêt brutal (processus tué, double Ctrl+C), Teams peut afficher l'agent encore quelques minutes. Les sessions créées avant l'enregistrement des options proposent « Reprendre dans le formulaire » au lieu de « Relancer ».
 - Comptez environ 300 à 500 Mo de mémoire par réunion.
-- API JSON, utilisable depuis un script : `POST /api/meetings` (`{"url": "...", "name": "...", "im": ["..."], "captions": true}`), `GET /api/meetings` (historique compris), `GET /api/meetings/<id>/feed`, `POST /api/meetings/<id>/chat` (`{"text": "..."}`), `POST /api/meetings/<id>/restart`, `DELETE /api/meetings/<id>`.
+- Tout ce que fait la page passe aussi par l'API JSON : voir « API » ci-dessous.
+
+#### Utilisateurs et groupes
+
+Dès qu'un utilisateur existe (ou avec `--auth`), il faut se connecter (identifiant et mot de passe) et les droits dépendent du **rôle** et des **groupes** :
+
+| Rôle | Droits |
+| --- | --- |
+| `admin` (administrateur) | Gère les utilisateurs et les groupes ; voit et pilote toutes les réunions |
+| `operator` (opérateur) | Lance, arrête, relance les agents et écrit dans le chat, pour les réunions de ses groupes |
+| `viewer` (lecteur) | Consulte seulement les réunions de ses groupes |
+
+Chaque réunion appartient à un groupe, choisi au lancement (le groupe de l'utilisateur s'il n'en a qu'un) ; une relance garde le groupe. Les réunions sans groupe (lancées avec `join`, d'avant les groupes, ou dont le groupe a été supprimé) ne sont visibles que des administrateurs.
+
+```bash
+python imo_agent.py user add erik --role admin           # mot de passe demandé (10 caractères minimum)
+python imo_agent.py user add sophie --group SRE          # opératrice du groupe SRE (créé s'il n'existe pas)
+python imo_agent.py user add paul --role viewer --group SRE --group DBA
+python imo_agent.py user set paul --role operator        # --group remplace les groupes
+python imo_agent.py user passwd sophie                   # nouveau mot de passe, connexions fermées
+python imo_agent.py user list | user del <nom>
+python imo_agent.py group add|del|list [<nom>]
+python imo_agent.py serve --llm azure-openai             # connexion obligatoire ; refusé sans administrateur
+```
+
+Les administrateurs ont aussi, dans la page, un panneau « Administration » (utilisateurs, rôles, groupes, mots de passe) ; chacun peut changer son mot de passe (« Mon mot de passe ») et créer ses jetons d'API (« Mes jetons d'API »).
+
+- Mots de passe hachés avec scrypt ; connexion valable 7 jours (cookie `HttpOnly`, `SameSite=Strict`, `Secure` en HTTPS) ; seule l'empreinte du jeton est en base. Changer un mot de passe ferme les autres connexions de l'utilisateur.
+- 10 échecs de connexion en 15 minutes pour un même identifiant bloquent les essais suivants le temps que la fenêtre passe.
+- Le dernier administrateur ne peut être ni supprimé, ni rétrogradé.
+- En ligne : gardez `--host 127.0.0.1` derrière un proxy HTTPS (Caddy, nginx) qui transmet l'en-tête `Host` et `X-Forwarded-Proto`, et déclarez le nom de domaine avec `--allowed-host imv.exemple.com`.
+
+#### API
+
+Tout se fait aussi par l'API JSON : rejoindre une réunion, suivre la conversation, écrire dans le chat, lancer les commandes de l'agent, analyser une session, quitter, relancer, administrer. Documentation interactive (Swagger) sur **`/api/docs`**, après connexion ; schéma OpenAPI sur `/api/openapi.json`.
+
+Avec la connexion obligatoire, un script s'authentifie avec un **jeton d'API**, qui a les droits de son utilisateur (rôle et groupes) : créé dans la page (« Mes jetons d'API ») ou en ligne de commande, il n'est affiché qu'une fois et seule son empreinte est en base. Pour un script, créez de préférence un utilisateur dédié (ex. `supervision`, rôle et groupes adaptés).
+
+```bash
+python imo_agent.py user add supervision --group SRE              # compte de service, opérateur
+python imo_agent.py token add supervision --name "astreinte" --days 365   # affiche imv_…
+python imo_agent.py token list | token del <id>
+```
+
+```bash
+H="Authorization: Bearer imv_…"; IMV=https://imv.exemple.com
+# Rejoindre une réunion (201 ; puis interroger l'état jusqu'à "in_meeting")
+curl -s -H "$H" -H "Content-Type: application/json" -X POST $IMV/api/meetings \
+     -d '{"url": "https://teams.microsoft.com/…", "incident": "INC42", "im": ["Sophie Lambert"], "group_id": 1}'
+curl -s -H "$H" $IMV/api/meetings/12                          # état : joining, in_meeting, ended…
+# Commande de l'agent, publiée dans le chat et renvoyée (comme « imv résumé » tapé par un responsable)
+curl -s -H "$H" -H "Content-Type: application/json" -X POST $IMV/api/meetings/12/command -d '{"command": "résumé"}'
+# Analyse sans rien publier dans la réunion (aussi pour une session terminée)
+curl -s -H "$H" -H "Content-Type: application/json" -X POST $IMV/api/meetings/12/analyze -d '{"command": "timeline"}'
+curl -s -H "$H" -X DELETE $IMV/api/meetings/12                # quitter la réunion (message d'au revoir)
+```
+
+| Route | Rôle minimal | Usage |
+| --- | --- | --- |
+| `GET /api/meetings` · `GET /api/meetings/<id>` | lecteur | Sessions visibles (historique compris) · état d'une session |
+| `GET /api/meetings/<id>/feed?limit=300` | lecteur | État, messages (chat, oral, réponses de l'agent), journal de l'agent |
+| `POST /api/meetings` | opérateur | Rejoindre : `url`, `name`, `im`, `incident`, `group_id`, `captions`, `captions_language` (`fr`/`en`), `avatar`, `welcome`, `llm` |
+| `POST /api/meetings/<id>/command` | opérateur | `{"command": "résumé"}` : toute commande « imv … » (`pistes`, `com direction`, `? question`, `démarrer INC42`, `pause`, `autoriser Sophie`, `clore`…), réponse publiée et renvoyée (`text`, `delivered`) |
+| `POST /api/meetings/<id>/analyze` | opérateur | `{"command": "rapport", "language": "en"}` : analyse LLM renvoyée sans publication, aussi après la réunion |
+| `POST /api/meetings/<id>/chat` | opérateur | `{"text": "…"}` : message libre au nom de l'agent |
+| `POST /api/meetings/<id>/restart` · `DELETE /api/meetings/<id>` | opérateur | Relancer une session terminée · quitter la réunion |
+| `GET /api/options` | lecteur | Fournisseurs LLM, groupes où l'utilisateur peut lancer un agent |
+| `GET /api/me` · `POST /api/me/password` | lecteur | Utilisateur courant · changer son mot de passe (`{"current", "new"}`) |
+| `GET\|POST /api/tokens` · `DELETE /api/tokens/<id>` | lecteur | Ses jetons (`{"name", "days"}`) ; administrateurs : `?all=true`, `"user_id"` pour un autre utilisateur. Création depuis une connexion par mot de passe seulement |
+| `POST /api/login` · `POST /api/logout` | — | Connexion par cookie (`{"username", "password"}`), pour la page |
+| `GET\|POST /api/users` · `PATCH\|DELETE /api/users/<id>` | admin | Utilisateurs (`{"username", "password", "role", "group_ids"}`) |
+| `GET\|POST /api/groups` · `DELETE /api/groups/<id>` | admin | Groupes (`{"name"}`) |
+
+Codes : 401 non connecté ou jeton invalide, 403 droits insuffisants, 404 session inconnue ou hors de vos groupes, 409 agent pas (ou plus) en réunion, 400 demande invalide, 502 LLM en erreur. Sans connexion (aucun utilisateur, ou `--no-auth`), les mêmes routes sont ouvertes sans jeton (poste local).
 
 ### Historique
 
@@ -173,6 +246,10 @@ Pendant la phase de prototype, une capture `debug/<date>-chat.{png,html}` est au
 Après le clic automatique sur « Join now », si ni la réunion ni la salle d'attente ne sont
 reconnues pendant 10 secondes, une capture `admission-pending.{png,html}` est enregistrée,
 même sans fenêtre visible (`debug/session-<id>/` avec le serveur).
+
+## Déploiement en ligne
+
+Serveur en ligne avec Docker et Traefik (HTTPS Let's Encrypt) : voir [deploy/README.md](deploy/README.md).
 
 ## Tests
 

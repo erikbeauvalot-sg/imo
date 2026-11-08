@@ -643,3 +643,46 @@ def test_close_without_llm_and_reserved_to_managers():
     assert sent[1].startswith("Résumé de fin\n• Échanges enregistrés : 1 message,")
     assert "Participants : Alice\n" in sent[1]
     assert sent[2].startswith("Fin du suivi") and closed == [True]
+
+
+def test_api_command_answers_and_posts_without_meeting_permissions():
+    async def scenario():
+        llm = FakeLLM()
+        agent, chat, store, sid = _agent(llm=llm, managers=("Bob",))
+        await agent.handle(_msg("Alice", "Erreurs 500 sur le paiement", "m1"))
+        # « erik » n'est pas responsable dans la réunion : les droits viennent du serveur web
+        command, text, delivered = await agent.api_command("résumé", "erik")
+        assert (command.verb, text, delivered) == ("resume", "Symptômes : erreurs 500", True)
+        assert "Demande faite par erik" in llm.prompts[-1]
+        _, text, _ = await agent.api_command("summary", "erik")  # alias anglais
+        assert text == "Symptômes : erreurs 500"
+        command, text, _ = await agent.api_command("pause", "erik")
+        assert command.verb == "pause" and agent.paused
+        await agent.api_command("autoriser Alice", "erik")
+        assert "alice" in agent.allowed
+        for bad in ("bonjour", "", "  "):
+            with pytest.raises(ValueError):
+                await agent.api_command(bad, "erik")
+        assert [i["type"] for i in store.interventions(sid)] == ["api"] * 4
+        return chat
+
+    chat = asyncio.run(scenario())
+    assert chat.sent[0] == "Symptômes : erreurs 500"
+
+
+def test_api_command_without_llm_and_close():
+    async def scenario():
+        agent, chat, store, sid = _agent(llm=None)
+        with pytest.raises(ValueError, match="analyse"):
+            await agent.api_command("résumé", "erik")
+        closed = []
+        agent.on_close = lambda: closed.append(True)
+        _, text, _ = await agent.api_command("clore", "erik")
+        assert text == "Clôture en cours."
+        await agent.wait_analyses()
+        with pytest.raises(ValueError, match="déjà"):
+            await agent.api_command("clore", "erik")
+        return closed, chat
+
+    closed, chat = asyncio.run(scenario())
+    assert closed == [True] and "Résumé de fin" in chat.sent[0]
