@@ -88,13 +88,32 @@ def validate_meeting_url(url: str) -> str:
     return url.strip()
 
 
+def web_join_url(url: str) -> str:
+    """Force le parcours web, y compris après une redirection du lien de réunion."""
+    parsed = urlparse(url)
+    query = dict(parse_qsl(parsed.query, keep_blank_values=True))
+    query["webjoin"] = "true"
+    return urlunparse(parsed._replace(query=urlencode(query)))
+
+
 def disable_app_launch(url: str) -> str:
-    """URL du lanceur Teams avec msLaunch=false : sinon il ouvre l'application Teams
-    installée sur la machine, qui rejoint la réunion avec le compte de l'utilisateur."""
+    """Contourne le lanceur vers sa destination web, sinon désactive son ouverture native."""
     parsed = urlparse(url)
     if not parsed.path.endswith("/launcher.html"):
         return url
     query = dict(parse_qsl(parsed.query, keep_blank_values=True))
+    destination = query.get("url")
+    if destination:
+        target = urljoin(url, destination)
+        try:
+            validate_meeting_url(target)
+        except ValueError as exc:
+            raise TeamsJoinError(
+                "invalid_launcher", "le lanceur ne contient pas une destination web Teams valide"
+            ) from exc
+        if urlparse(target).path.endswith("/launcher.html"):
+            raise TeamsJoinError("invalid_launcher", "le lanceur pointe vers un autre lanceur Teams")
+        return web_join_url(target)
     if query.get("msLaunch") == "false" and query.get("suppressPrompt") == "true":
         return url
     query.update(msLaunch="false", suppressPrompt="true")
@@ -185,7 +204,7 @@ class TeamsSession:
         request = route.request
         rewritten = disable_app_launch(request.url)
         if rewritten != request.url and request.is_navigation_request():
-            log.debug("Lanceur Teams réécrit : msLaunch=false")
+            log.debug("Lanceur Teams contourné pour rester dans le navigateur")
             await route.fulfill(status=302, headers={"location": rewritten})
         else:
             await route.fallback()
@@ -223,35 +242,42 @@ class TeamsSession:
             raise
 
     async def _resolve_launcher_url(self) -> str:
-        """Suit la redirection du lien de réunion vers le lanceur et y force msLaunch=false.
+        """Résout le lien de réunion vers la destination web, sans charger le lanceur natif.
 
         Playwright n'intercepte pas les redirections : la route de start() ne suffit
         pas pour la redirection 302 du lien /meet/... vers launcher.html."""
         assert self._context is not None
         try:
-            response = await self._context.request.get(self.url, max_redirects=0, timeout=15000)
+            response = await self._context.request.get(web_join_url(self.url), max_redirects=0, timeout=15000)
             location = response.headers.get("location")
             await response.dispose()
         except Exception as exc:  # noqa: BLE001 — on retombe sur l'URL d'origine
             log.debug("Résolution du lien impossible : %s", exc)
-            return self.url
+            return web_join_url(self.url)
         if not location:
-            return self.url
-        target = disable_app_launch(urljoin(self.url, location))
+            return web_join_url(self.url)
+        target = web_join_url(disable_app_launch(urljoin(self.url, location)))
         log.debug("Lien résolu : %s", target)
         return target
 
     async def _reach_prejoin(self, timeout: float) -> None:
         page = self._require_page()
         deadline = time.monotonic() + timeout
+        continued_urls: set[str] = set()
         while time.monotonic() < deadline:
             self._check_not_login_page()
+            target = disable_app_launch(page.url)
+            if target != page.url:
+                await page.goto(target, wait_until="domcontentloaded")
+                continue
             if await self._click_first(sel.CONTINUE_WITHOUT_MEDIA):
                 continue
             if await self._visible(sel.JOIN_NOW) or await self._visible(sel.NAME_INPUT):
                 log.info("Écran de pré-connexion atteint")
                 return
-            if await self._click_first(sel.CONTINUE_IN_BROWSER):
+            current_url = page.url
+            if current_url not in continued_urls and await self._click_first(sel.CONTINUE_IN_BROWSER):
+                continued_urls.add(current_url)
                 log.info("« Continuer dans ce navigateur » cliqué")
             await page.wait_for_timeout(500)
         raise TeamsJoinError("prejoin_timeout", "écran de pré-connexion introuvable")
@@ -293,6 +319,8 @@ class TeamsSession:
         page = self._require_page()
         deadline = time.monotonic() + timeout
         announced_lobby = False
+        diagnostic_at = time.monotonic() + 10
+        diagnostic_saved = False
         while time.monotonic() < deadline:
             self._check_not_login_page()
             if await self._visible(sel.IN_MEETING):
@@ -306,6 +334,13 @@ class TeamsSession:
                 log.info("En salle d'attente : un participant doit admettre « %s »", self.display_name)
                 announced_lobby = True
             await self._click_first(sel.CONTINUE_WITHOUT_MEDIA)
+            if not announced_lobby and not diagnostic_saved and time.monotonic() >= diagnostic_at:
+                log.warning(
+                    "Après le clic sur « Join now », ni la réunion ni la salle d'attente "
+                    "ne sont reconnues : capture de diagnostic"
+                )
+                await self.snapshot("admission-pending")
+                diagnostic_saved = True
             await page.wait_for_timeout(1000)
         raise TeamsJoinError("admission_timeout", f"non admis après {timeout:.0f} s")
 

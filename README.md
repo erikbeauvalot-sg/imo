@@ -26,6 +26,14 @@ Si `playwright install chromium` échoue (proxy ou filtrage du réseau d'entrepr
 
 `pyproject.toml` fait référence pour les dépendances ; `requirements.txt` et `requirements-dev.txt` doivent rester identiques, ce que vérifie `tests/test_requirements.py`. Après l'ajout d'une dépendance, mettre à jour les deux.
 
+L'agent utilise un profil temporaire neuf et rejoint dans le navigateur, pas dans l'application Teams.
+Le lanceur Teams est contourné vers sa destination web lorsqu'elle est fournie ; sinon,
+`msLaunch=false` et `suppressPrompt=true` sont ajoutés. La résolution du lien et sa
+destination utilisent aussi `webjoin=true` pour demander explicitement le parcours web.
+Il ne faut pas autoriser l'ouverture
+de l'application Teams. Si la connexion bloque, ajoutez `--show --browser msedge` à la commande
+`serve` ou `join` pour afficher Edge. Un choix « Toujours autoriser » n'est pas conservé entre sessions.
+
 ## Utilisation
 
 ```bash
@@ -154,6 +162,7 @@ La page permet de lancer un agent dans une réunion (lien, nom, responsables, in
 | Code | Signification probable |
 | --- | --- |
 | `login_required` | Teams exige une connexion : les invités anonymes sont interdits pour cette réunion |
+| `invalid_launcher` | La destination du lanceur n'est pas une URL web Teams valide, ou renvoie vers un autre lanceur |
 | `prejoin_blocked` | « Join now » reste désactivé (nom refusé, ou politique du tenant) |
 | `rejected` | Un participant a refusé l'admission |
 | `admission_timeout` | Personne n'a admis l'agent à temps |
@@ -161,6 +170,9 @@ La page permet de lancer un agent dans une réunion (lien, nom, responsables, in
 | `chat_unavailable` | Bouton du chat introuvable (chat désactivé, ou sélecteurs à ajuster) |
 
 Pendant la phase de prototype, une capture `debug/<date>-chat.{png,html}` est aussi faite en fin de session : elle **contient les messages du chat**, à supprimer après usage. En cas d'échec, une capture d'écran et le HTML de la page sont enregistrés dans `debug/` : ils servent à ajuster les sélecteurs dans `imo/connectors/teams/selectors.py` et `chat_reader.js`.
+Après le clic automatique sur « Join now », si ni la réunion ni la salle d'attente ne sont
+reconnues pendant 10 secondes, une capture `admission-pending.{png,html}` est enregistrée,
+même sans fenêtre visible (`debug/session-<id>/` avec le serveur).
 
 ## Tests
 

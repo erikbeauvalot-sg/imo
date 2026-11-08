@@ -5,13 +5,16 @@ from __future__ import annotations
 import asyncio
 import logging
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
+from urllib.parse import quote
 
 import pytest
 
 from imo.agent import WELCOME, IncidentAgent
 from imo.connectors.teams import TeamsJoinError, TeamsSession, validate_display_name
 from imo.connectors.teams.avatar import avatar_video
-from imo.connectors.teams.join import disable_app_launch, validate_meeting_url
+from imo.connectors.teams.join import disable_app_launch, validate_meeting_url, web_join_url
 from imo.models import ChatMessage
 from imo.storage import Store
 
@@ -240,6 +243,26 @@ def test_rejected_admission(tmp_path):
     assert list(tmp_path.glob("*-join-failed.png"))
 
 
+def test_unrecognized_admission_screen_is_captured(tmp_path, caplog):
+    async def scenario():
+        session = await _session(tmp_path=tmp_path)
+        try:
+            await session.page.goto(MEETING_URL)
+            await session.page.set_content("<p>Connecting to meeting...</p>")
+            with pytest.raises(TeamsJoinError) as exc:
+                await session._wait_admission(12)
+            assert exc.value.code == "admission_timeout"
+        finally:
+            await session.close()
+
+    asyncio.run(scenario())
+    assert len(list(tmp_path.glob("*-admission-pending.png"))) == 1
+    captures = list(tmp_path.glob("*-admission-pending.html"))
+    assert len(captures) == 1
+    assert "Connecting to meeting" in captures[0].read_text(encoding="utf-8")
+    assert "ni la réunion ni la salle d'attente" in caplog.text
+
+
 def test_login_redirect_means_guests_not_allowed():
     async def scenario():
         session = await _session("?login=1")
@@ -260,11 +283,82 @@ def test_disable_app_launch():
         "%3Fp%3Dsecret%26anon%3Dtrue&type=meet&deeplinkId=d1e5&directDl=true&msLaunch=true&enableMobilePage=true"
     )
     rewritten = disable_app_launch(launcher)
-    assert "msLaunch=false" in rewritten and "suppressPrompt=true" in rewritten
-    # Le lien de la réunion, encodé dans « url », est conservé
-    assert "url=%2F_%23%2Fmeet%2F344615604655081%3Fp%3Dsecret%26anon%3Dtrue" in rewritten
+    assert rewritten == "https://teams.microsoft.com/_?webjoin=true#/meet/344615604655081?p=secret&anon=true"
     assert disable_app_launch(rewritten) == rewritten
     assert disable_app_launch(MEETING_URL) == MEETING_URL
+
+
+@pytest.mark.parametrize(
+    "url, expected",
+    [
+        ("https://teams.microsoft.com/meet/123?p=abc", "https://teams.microsoft.com/meet/123?p=abc&webjoin=true"),
+        ("https://teams.microsoft.com/meet/123?webjoin=false", "https://teams.microsoft.com/meet/123?webjoin=true"),
+        ("https://teams.microsoft.com/_#/meet/123?p=abc", "https://teams.microsoft.com/_?webjoin=true#/meet/123?p=abc"),
+    ],
+)
+def test_web_join_url(url, expected):
+    assert web_join_url(url) == expected
+    assert web_join_url(expected) == expected
+
+
+@pytest.mark.parametrize("destination", ["/_#/meet/123?p=abc&anon=true", MEETING_URL])
+def test_launcher_opens_web_destination_without_loading_launcher(destination):
+    async def scenario():
+        session = await _session()
+        session.resolve_launcher = True
+        launcher_requests = []
+        try:
+            async def serve(route):
+                launcher_requests.append(route.request.url)
+                await route.fulfill(body="<p>Native app launcher must not load</p>")
+
+            await session._context.unroute("**/dl/launcher/launcher.html*")
+            await session._context.route("**/dl/launcher/launcher.html*", serve)
+            launcher = "https://teams.microsoft.com/dl/launcher/launcher.html?msLaunch=true&url=" + quote(
+                destination, safe=""
+            )
+            response = SimpleNamespace(headers={"location": launcher}, dispose=AsyncMock())
+            with patch.object(session._context.request, "get", new=AsyncMock(return_value=response)):
+                await session.join(prejoin_timeout=5, admission_timeout=5)
+                session._context.request.get.assert_awaited_once_with(
+                    web_join_url(MEETING_URL), max_redirects=0, timeout=15000
+                )
+            assert session.page.url == disable_app_launch(launcher)
+            assert await session.page.evaluate("window.joinedAs") == "IMV - Assistant IM"
+            assert launcher_requests == []
+        finally:
+            await session.close()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("destination", ["https://example.com/meet/1", "msteams:/meet/1", "/dl/launcher/launcher.html"])
+def test_invalid_launcher_destination(destination):
+    launcher = "https://teams.microsoft.com/dl/launcher/launcher.html?url=" + quote(destination, safe="")
+    with pytest.raises(TeamsJoinError) as exc:
+        disable_app_launch(launcher)
+    assert exc.value.code == "invalid_launcher"
+
+
+def test_continue_in_browser_is_not_clicked_repeatedly():
+    async def scenario():
+        session = await _session()
+        try:
+            await session.page.goto(MEETING_URL)
+            await session.page.evaluate(
+                """() => {
+                    window.continueClicks = 0;
+                    document.getElementById('continue').onclick = () => { window.continueClicks++; };
+                }"""
+            )
+            with pytest.raises(TeamsJoinError) as exc:
+                await session._reach_prejoin(2)
+            assert exc.value.code == "prejoin_timeout"
+            assert await session.page.evaluate("window.continueClicks") == 1
+        finally:
+            await session.close()
+
+    asyncio.run(scenario())
 
 
 def test_launcher_navigation_is_rewritten():
@@ -280,7 +374,7 @@ def test_launcher_navigation_is_rewritten():
             await session._context.route("https://teams.microsoft.com/dl/launcher/**", launcher_page)
             await session._context.unroute("**/dl/launcher/launcher.html*")
             await session._context.route("**/dl/launcher/launcher.html*", session._block_app_launch)
-            await session.page.goto("https://teams.microsoft.com/dl/launcher/launcher.html?url=x&msLaunch=true")
+            await session.page.goto("https://teams.microsoft.com/dl/launcher/launcher.html?msLaunch=true")
             return session.page.url
         finally:
             await session.close()
