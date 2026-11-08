@@ -14,7 +14,9 @@ from pathlib import Path
 
 from imo.agent import IncidentAgent
 from imo.analysis import load_context
-from imo.connectors.teams import TeamsJoinError, TeamsSession
+from imo.connectors import JoinError
+from imo.connectors.teams import TeamsSession
+from imo.connectors.telegram import TelegramSession, is_telegram_url
 from imo.connectors.teams.avatar import avatar_video
 from imo.llm import make_llm
 from imo.models import ChatMessage
@@ -83,17 +85,21 @@ class MeetingRunner:
         self.store = store
         self.sinks = sinks
         self.name = config.name or DEFAULT_AGENT_NAME
-        camera_video = None
-        if config.avatar:
-            camera_video = avatar_video(None if config.avatar == "robot" else Path(config.avatar), label=self.name)
-        self.session = TeamsSession(
-            config.url,
-            self.name,
-            headless=not config.show,
-            debug_dir=config.debug_dir,
-            camera_video=camera_video,
-            browser=config.browser,
-        )
+        if is_telegram_url(config.url):
+            # Groupe Telegram (essais sans Teams) : ni navigateur, ni caméra, ni sous-titres
+            self.session: TeamsSession | TelegramSession = TelegramSession(config.url, self.name)
+        else:
+            camera_video = None
+            if config.avatar:
+                camera_video = avatar_video(None if config.avatar == "robot" else Path(config.avatar), label=self.name)
+            self.session = TeamsSession(
+                config.url,
+                self.name,
+                headless=not config.show,
+                debug_dir=config.debug_dir,
+                camera_video=camera_video,
+                browser=config.browser,
+            )
         self.llm = make_llm(config.llm, config.llm_model) if config.llm else None
         # Agent Hermes pour « imv hermes <tâche> » : disponible dès que HERMES_API_KEY est défini,
         # quel que soit le LLM des analyses ; client distinct, qui peut se servir des outils.
@@ -148,7 +154,7 @@ class MeetingRunner:
             self.error = str(exc)
             log.error("Session interrompue — %s", exc)
             self._set_status("failed", getattr(exc, "code", "error"))
-            if isinstance(exc, TeamsJoinError):
+            if isinstance(exc, JoinError):
                 return 2
             raise
 
@@ -166,10 +172,10 @@ class MeetingRunner:
             stopped.cancel()
             try:
                 join.result()
-            except TeamsJoinError as exc:
+            except JoinError as exc:
                 self.error = str(exc)
                 log.error("Connexion impossible — %s", exc)
-                if not config.show:
+                if not config.show and isinstance(session, TeamsSession):
                     log.info("Pour voir ce qui se passe dans le navigateur, relancez avec --show")
                 self._set_status("failed", exc.code)
                 return 2

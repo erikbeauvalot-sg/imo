@@ -82,8 +82,12 @@
     <section id="new-agent" class="hidden">
       <h2>Nouvel agent</h2>
       <form id="form">
-        <label for="url">Lien de la réunion Teams</label>
-        <input id="url" type="url" required placeholder="https://teams.microsoft.com/…">
+        <label for="url">Lien de la réunion Teams, ou groupe Telegram</label>
+        <input id="url" type="text" required placeholder="https://teams.microsoft.com/… ou telegram:-100…">
+        <div id="telegram-box" class="hidden">
+          <label for="telegram">Groupe Telegram (essais sans Teams)</label>
+          <select id="telegram"></select>
+        </div>
         <label for="name">Nom affiché</label>
         <input id="name" type="text" placeholder="IMV - Oscar">
         <label for="im">Responsable(s) d'IMV, séparés par des virgules</label>
@@ -228,7 +232,13 @@ async function loadOptions() {
   const preferred = current || String(me.groups[0]?.id ?? "");
   if ([...$("group").options].some((opt) => opt.value === preferred)) $("group").value = preferred;
   $("group-box").classList.toggle("hidden", !o.groups.length);
+  // Groupes Telegram où le bot est présent : le choix remplit le lien de la réunion.
+  const tg = o.telegram || { chats: [] };
+  $("telegram").innerHTML = `<option value="">— Choisir un groupe ${esc(tg.bot || "")} —</option>` +
+    tg.chats.map((c) => `<option value="telegram:${c.id}">${esc(c.title)}</option>`).join("");
+  $("telegram-box").classList.toggle("hidden", !tg.chats.length);
 }
+$("telegram").addEventListener("change", () => { if ($("telegram").value) $("url").value = $("telegram").value; });
 
 async function loadMe() {
   me = await api("/api/me");

@@ -226,6 +226,18 @@ curl -s -H "$H" -X DELETE $IMV/api/meetings/12                # quitter la réun
 
 Codes : 401 non connecté ou jeton invalide, 403 droits insuffisants, 404 session inconnue ou hors de vos groupes, 409 agent pas (ou plus) en réunion, 400 demande invalide, 502 LLM en erreur. Sans connexion (aucun utilisateur, ou `--no-auth`), les mêmes routes sont ouvertes sans jeton (poste local).
 
+### Essais sur Telegram (sans Teams)
+
+Un groupe Telegram peut tenir lieu de chat de réunion : Oscar y suit la conversation avec les mêmes commandes (`Oscar, résumé`, `imv pistes`, `imv hermes …`, conversation libre, clôture). Pas de voix ni de caméra.
+
+1. Créer le bot avec [@BotFather](https://t.me/BotFather) : `/newbot` (nom « Oscar », identifiant libre, par exemple `oscar_imv_bot`), puis **`/setprivacy` → Disable** : sans cela, le bot ne voit que les commandes `/…` du groupe.
+2. Variables du serveur : `TELEGRAM_BOT_TOKEN` (jeton donné par BotFather), `TELEGRAM_ALLOWED_USERS` (qui peut lancer Oscar par `/oscar` : identifiants numériques ou `@noms` Telegram, séparés par des virgules), et facultativement `IMV_TELEGRAM_GROUP` (groupe IMV des sessions lancées depuis Telegram ; sans lui, visibles des administrateurs seuls) et `IMV_TELEGRAM_LANGUAGE` (`fr` par défaut, ou `en`).
+3. Ajouter le bot à un groupe Telegram, puis :
+   - taper **`/oscar`** dans le groupe (utilisateur autorisé) : la session démarre, et la personne qui l'a lancée est responsable d'IMV ;
+   - ou, dans la page, choisir le groupe dans « Groupe Telegram » (lien `telegram:<id>`) et cliquer « Lancer ».
+
+Les commandes Telegram (`/resume`, `/pistes`, `/aide`, `/clore`…) valent `imv resume`, `imv pistes`… ; une mention du bot en tête de message vaut l'appel par le nom. « Quitter la réunion » arrête le suivi (le bot reste dans le groupe) ; retirer le bot du groupe termine la session. `join telegram:<id>` fonctionne aussi en ligne de commande. Un seul serveur à la fois peut utiliser un même bot.
+
 ### Historique
 
 ```bash

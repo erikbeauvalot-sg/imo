@@ -91,6 +91,11 @@ CREATE TABLE IF NOT EXISTS api_tokens (
     expires_at   TEXT,                   -- NULL : sans expiration
     last_used_at TEXT
 );
+CREATE TABLE IF NOT EXISTS telegram_chats (
+    chat_id INTEGER PRIMARY KEY,         -- groupe Telegram où le bot est présent (lien telegram:<id>)
+    title   TEXT NOT NULL,
+    seen_at TEXT NOT NULL
+);
 """
 
 # Colonnes ajoutées après coup à des bases existantes
@@ -423,3 +428,20 @@ class Store:
     def delete_api_token(self, token_id: int) -> None:
         with self.db:
             self.db.execute("DELETE FROM api_tokens WHERE id = ?", (token_id,))
+
+    # -- groupes Telegram ------------------------------------------------------
+
+    def save_telegram_chat(self, chat_id: int, title: str) -> None:
+        with self.db:
+            self.db.execute(
+                "INSERT INTO telegram_chats (chat_id, title, seen_at) VALUES (?, ?, ?) "
+                "ON CONFLICT (chat_id) DO UPDATE SET title = excluded.title, seen_at = excluded.seen_at",
+                (chat_id, title, utc_now()),
+            )
+
+    def forget_telegram_chat(self, chat_id: int) -> None:
+        with self.db:
+            self.db.execute("DELETE FROM telegram_chats WHERE chat_id = ?", (chat_id,))
+
+    def telegram_chats(self) -> list[sqlite3.Row]:
+        return self.db.execute("SELECT chat_id, title FROM telegram_chats ORDER BY title").fetchall()

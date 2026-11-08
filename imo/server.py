@@ -40,6 +40,8 @@ from imo.auth import (
 from imo import metrics
 from imo.agent import parse_command
 from imo.analysis import TASKS, UsageError, analyze, load_context
+from imo.connectors import JoinError
+from imo.connectors.telegram import TelegramBot, allowed_users, get_bot, is_allowed, sender_name
 from imo.llm import PROVIDERS, LLMError, make_llm
 from imo.runner import DEFAULT_AGENT_NAME, MeetingConfig, MeetingRunner, resolve_context_path
 from imo.storage import Store
@@ -250,11 +252,58 @@ def create_app(
         # Base ouverte dans la boucle du serveur : SQLite refuse d'être utilisé depuis un autre thread.
         store = Store(db)
         meetings = Meetings(store, defaults)
+        bot = await start_telegram(store)
         try:
             yield
             await meetings.shutdown()
         finally:
+            if bot is not None:
+                await bot.stop()
             store.close()
+
+    async def start_telegram(store: Store) -> TelegramBot | None:
+        """Bot Telegram du serveur (TELEGRAM_BOT_TOKEN) : groupes vus, « /oscar » pour démarrer."""
+        if not os.environ.get("TELEGRAM_BOT_TOKEN"):
+            return None
+        bot = get_bot()
+
+        def remember(chat_id: int, title: str | None) -> None:
+            if title:
+                store.save_telegram_chat(chat_id, title)
+            else:
+                store.forget_telegram_chat(chat_id)
+
+        async def start_from_group(chat_id: int, title: str, user: dict) -> None:
+            if not is_allowed(user, allowed_users()):
+                log.warning("Telegram : /oscar refusé à %s (id %s) dans « %s »", sender_name(user),
+                            user.get("id"), title)
+                await bot.api.call("sendMessage", chat_id=chat_id, text=(
+                    f"{sender_name(user)}, vous n'êtes pas autorisé à lancer Oscar "
+                    f"(identifiant Telegram : {user.get('id')}, à ajouter à TELEGRAM_ALLOWED_USERS)."))
+                return
+            group = os.environ.get("IMV_TELEGRAM_GROUP", "").strip()
+            row = meetings.store.group_by_name(group) if group else None
+            language = os.environ.get("IMV_TELEGRAM_LANGUAGE", "fr").strip()
+            request = MeetingRequest(
+                url=f"telegram:{chat_id}", im=[sender_name(user)], captions=False, avatar=False,
+                captions_language=language if language in ("fr", "en") else None,
+            )
+            who = f"telegram:@{user['username']}" if user.get("username") else f"telegram:{user.get('id')}"
+            try:
+                runner = meetings.start(request, row["id"] if row else None, who)
+            except (ValueError, LLMError) as exc:
+                await bot.api.call("sendMessage", chat_id=chat_id, text=f"Impossible de démarrer Oscar : {exc}")
+                return
+            log.info("Telegram : session %s démarrée par %s dans « %s »", runner.session_id, who, title)
+
+        bot.on_chat = remember
+        bot.on_start = start_from_group
+        try:
+            await bot.start()
+        except JoinError as exc:
+            log.error("Telegram indisponible : %s", exc)
+            return None
+        return bot
 
     # Documentation : /api/docs après connexion (pas les routes publiques par défaut de FastAPI)
     app = FastAPI(title="IMV", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
@@ -429,6 +478,11 @@ def create_app(
             "agent_name": DEFAULT_AGENT_NAME,
             "im": os.environ.get("IMV_IM", "").strip() or None,
             "groups": groups,  # groupes où l'utilisateur peut lancer un agent
+            # Groupes Telegram où le bot est présent : lien de réunion « telegram:<id> »
+            "telegram": {
+                "bot": f"@{get_bot().username}" if os.environ.get("TELEGRAM_BOT_TOKEN") else None,
+                "chats": [{"id": r["chat_id"], "title": r["title"]} for r in meetings.store.telegram_chats()],
+            },
         }
 
     @app.get("/api/meetings", tags=["réunions"])

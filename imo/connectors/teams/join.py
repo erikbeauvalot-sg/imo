@@ -14,6 +14,7 @@ from urllib.parse import parse_qsl, urlencode, urljoin, urlparse, urlunparse
 
 from playwright.async_api import Browser, BrowserContext, Page, Playwright, async_playwright
 
+from imo.connectors import JoinError
 from imo.connectors.teams import selectors as sel
 from imo.connectors.teams.avatar import media_dir
 from imo.models import ChatMessage
@@ -59,12 +60,8 @@ def _blank_media_files() -> tuple[Path, Path]:
     return silence, black
 
 
-class TeamsJoinError(Exception):
-    """Échec de connexion à la réunion, avec un code exploitable."""
-
-    def __init__(self, code: str, message: str) -> None:
-        super().__init__(f"{code}: {message}")
-        self.code = code
+class TeamsJoinError(JoinError):
+    """Échec de connexion à la réunion Teams, avec un code exploitable."""
 
 
 def validate_display_name(name: str) -> str:
