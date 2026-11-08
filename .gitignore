@@ -10,3 +10,4 @@ contexte.md
 .claude/settings.json
 deploy/data/
 deploy/letsencrypt/
+deploy/traefik/*.yml

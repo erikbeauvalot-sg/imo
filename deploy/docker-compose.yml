@@ -6,31 +6,33 @@ services:
   traefik:
     image: traefik:v3.6
     restart: unless-stopped
+    # Réseau de l'hôte : Traefik joint aussi les services de l'hôte en écoute sur 127.0.0.1
+    # (deploy/traefik/*.yml) et voit l'adresse IP réelle des visiteurs, en IPv4 comme en IPv6.
+    network_mode: host
     command:
       - --providers.docker=true
       - --providers.docker.exposedbydefault=false
-      - --entrypoints.web.address=:80
+      - --providers.file.directory=/etc/traefik/dynamic
+      - --providers.file.watch=true
+      - --entrypoints.web.address=:${HTTP_PORT:-80}
       - --entrypoints.web.http.redirections.entrypoint.to=websecure
       - --entrypoints.web.http.redirections.entrypoint.scheme=https
-      - --entrypoints.websecure.address=:443
+      - --entrypoints.websecure.address=:${HTTPS_PORT:-443}
       - --certificatesresolvers.le.acme.email=${ACME_EMAIL:?ACME_EMAIL manquant dans deploy/.env}
       - --certificatesresolvers.le.acme.storage=/letsencrypt/acme.json
       - --certificatesresolvers.le.acme.tlschallenge=true
       - --accesslog=true
-    ports:
-      - "${HTTP_PORT:-80}:80"
-      - "${HTTPS_PORT:-443}:443"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - ./letsencrypt:/letsencrypt
-    networks: [web]
+      - ./traefik:/etc/traefik/dynamic:ro  # services de l'hôte (voir traefik/hote.yml.example)
 
   imv:
     build: ..
     image: imv:latest
     pull_policy: build
     restart: unless-stopped
-    # Pas de port publié : seul Traefik joint IMV, par le réseau interne.
+    # Pas de port publié : seul Traefik joint IMV, par son adresse sur le réseau Docker.
     command:
       - serve
       - --auth
@@ -40,7 +42,7 @@ services:
     environment:
       TZ: ${TZ:-Europe/Paris}  # heures affichées dans les résumés
       # En-têtes X-Forwarded-* de Traefik acceptés (schéma https : cookie Secure). Sans risque :
-      # le conteneur n'est joignable que par le réseau interne.
+      # le conteneur n'est joignable que depuis le VPS (réseau Docker, aucun port publié).
       FORWARDED_ALLOW_IPS: "*"
     volumes:
       - ./data:/data  # base, captures, contexte.md (appartenant à l'uid 1001)

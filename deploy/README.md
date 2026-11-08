@@ -1,6 +1,6 @@
 # Déploiement d'IMV sur un VPS (Docker + Traefik)
 
-Deux conteneurs : **Traefik**, seul exposé sur Internet (ports 80 et 443, certificat Let's Encrypt, redirection HTTP → HTTPS, en-têtes de sécurité), et **IMV**, joignable uniquement par Traefik sur le réseau interne. La connexion par identifiant et mot de passe est obligatoire (voir « Utilisateurs et groupes » dans le README principal).
+Deux conteneurs : **Traefik**, seul exposé sur Internet (ports 80 et 443 de l'hôte, certificat Let's Encrypt, redirection HTTP → HTTPS, en-têtes de sécurité), et **IMV**, sans port publié, joint par Traefik sur le réseau Docker. Traefik utilise le réseau de l'hôte : il voit l'adresse IP réelle des visiteurs et peut aussi publier des services de l'hôte (voir « Autres services de l'hôte »). La connexion par identifiant et mot de passe est obligatoire (voir « Utilisateurs et groupes » dans le README principal).
 
 ## Prérequis
 
@@ -39,10 +39,14 @@ Puis ouvrir `https://<IMV_DOMAIN>`. Le certificat est obtenu au premier accès (
 
 ## Sécurité
 
-- Pare-feu : n'ouvrir que SSH, 80 et 443 (`ufw allow OpenSSH && ufw allow 80,443/tcp && ufw enable`). Docker publie les ports de Traefik en contournant `ufw` : IMV, lui, ne publie aucun port.
+- Pare-feu : n'ouvrir que SSH, 80 et 443 (`ufw allow OpenSSH && ufw allow 80,443/tcp && ufw enable`). Traefik écoute directement sur l'hôte : ces règles s'appliquent. IMV ne publie aucun port.
 - Traefik lit le socket Docker (en lecture seule) pour découvrir IMV : un accès à Traefik vaut un accès à Docker. Gardez son image à jour.
 - Les identifiants du LLM sont dans `deploy/.env` (droits `600` conseillés : `chmod 600 .env`).
 - Le serveur limite les essais de connexion, n'accepte que le nom de domaine déclaré et refuse les requêtes envoyées par d'autres sites ; le cookie de connexion est `Secure` (HTTPS) et `HttpOnly`.
+
+## Autres services de l'hôte
+
+Traefik peut publier en HTTPS un service qui tourne sur le VPS hors Docker, en écoute sur `127.0.0.1` (par exemple un tableau de bord d'administration) : copier `traefik/hote.yml.example` en `traefik/<nom>.yml`, adapter le nom de domaine (enregistrement DNS vers le VPS), le port et les adresses IP autorisées. Ces fichiers ne sont pas versionnés et Traefik les prend en compte sans redémarrage. Le service garde sa propre authentification ; le filtre IP (`ipAllowList`) la complète.
 
 ## Limites
 
@@ -52,4 +56,4 @@ Puis ouvrir `https://<IMV_DOMAIN>`. Le certificat est obtenu au premier accès (
 
 ## Essai en local
 
-Avec `IMV_DOMAIN=imv.localtest.me` (nom qui pointe vers 127.0.0.1), `HTTP_PORT=8080` et `HTTPS_PORT=8443` dans `.env` : `https://imv.localtest.me:8443`, avec le certificat par défaut de Traefik (Let's Encrypt ne peut pas valider un nom local), à accepter dans le navigateur.
+Avec `IMV_DOMAIN=imv.localtest.me` (nom qui pointe vers 127.0.0.1), `HTTP_PORT=8080` et `HTTPS_PORT=8443` dans `.env` (Docker Desktop : activer *Settings → Resources → Network → Enable host networking*, Traefik étant sur le réseau de l'hôte) : `https://imv.localtest.me:8443`, avec le certificat par défaut de Traefik (Let's Encrypt ne peut pas valider un nom local), à accepter dans le navigateur.

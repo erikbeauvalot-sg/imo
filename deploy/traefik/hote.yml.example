@@ -1,0 +1,30 @@
+# Publier par Traefik un service de l'hôte (hors Docker) en écoute sur 127.0.0.1.
+# Copier en <nom>.yml dans ce dossier (non versionné : il peut contenir vos adresses IP) et
+# adapter le nom de domaine, le port et les adresses autorisées. Traefik le prend en compte
+# sans redémarrage. Le service garde sa propre authentification : le filtre IP s'y ajoute.
+# Le nom de domaine doit avoir un enregistrement DNS vers le VPS (certificat Let's Encrypt).
+http:
+  routers:
+    service-hote:
+      rule: Host(`service.exemple.com`)
+      entryPoints: [websecure]
+      service: service-hote
+      middlewares: [service-hote-ip, service-hote-headers]
+      tls:
+        certResolver: le
+  services:
+    service-hote:
+      loadBalancer:
+        servers:
+          - url: http://127.0.0.1:9119
+  middlewares:
+    # Seules ces adresses atteignent le service ; les autres reçoivent 403.
+    service-hote-ip:
+      ipAllowList:
+        sourceRange:
+          - 203.0.113.10/32  # IPv4 fixe
+          - 2001:db8:1:2::/64  # préfixe IPv6 du réseau local (l'adresse exacte change)
+    service-hote-headers:
+      headers:
+        stsSeconds: 31536000
+        contentTypeNosniff: true
