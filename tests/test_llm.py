@@ -396,3 +396,11 @@ def test_hermes_configuration_errors(monkeypatch):
     monkeypatch.setenv("HERMES_API_URL", "http://127.0.0.1:9/v1")
     with pytest.raises(LLMError, match="injoignable"):
         asyncio.run(make_llm("hermes").complete("s", "p"))
+
+
+def test_system_prompt_forbids_claiming_actions():
+    from imo.analysis import build_system
+
+    for language in ("fr", "en"):
+        system = build_system(None, language)
+        assert "Ne prétends jamais avoir" in system and "imv démarrer INC123" in system

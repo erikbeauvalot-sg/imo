@@ -365,7 +365,12 @@ class TelegramSession:
             if command is None:
                 return None  # commande destinée à un autre bot
             rest = re.sub(r"^/[A-Za-z0-9_]+(?:@[A-Za-z0-9_]+)?", "", text).strip()
-            text = "imv statut" if command == START_COMMAND else f"imv {command} {rest}".strip()
+            if command == START_COMMAND:
+                text = "imv statut"
+            elif command == "imv":  # « /imv start INC1 » : déjà une commande IMV
+                text = f"imv {rest}".strip() if rest else "imv aide"
+            else:
+                text = f"imv {command} {rest}".strip()
         elif self.bot.username:
             short = self.display_name.split(" - ")[-1].strip() or "IMV"
             text = re.sub(rf"^@{re.escape(self.bot.username)}\b", f"@{short}", text, flags=re.IGNORECASE)

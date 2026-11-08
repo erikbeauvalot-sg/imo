@@ -144,11 +144,13 @@ def test_runner_follows_a_telegram_group(telegram):
         await _until(lambda: len(telegram.sent) >= 2)
         telegram.push_message(BOB, "/aide@oscar_test_bot")
         await _until(lambda: len(telegram.sent) >= 3)
+        telegram.push_message(BOB, "/imv démarrer INC77")  # « /imv … » : commande IMV telle quelle
+        await _until(lambda: len(telegram.sent) >= 4)
         telegram.push_message(BOB, "/start@autre_bot")  # commande d'un autre bot : ignorée
         telegram.push_message(BOB, "Le site de paiement renvoie des erreurs 500")
         # Même nom affiché que le responsable, autre compte : commande réservée refusée
         telegram.push_message({"id": 66, "first_name": "Bob", "last_name": "Durand"}, "imv autoriser tous")
-        await _until(lambda: len(telegram.sent) >= 4)
+        await _until(lambda: len(telegram.sent) >= 5)
         assert not runner.agent.open_to_all
 
         telegram.push_removed()  # bot retiré du groupe : fin de session
@@ -159,10 +161,11 @@ def test_runner_follows_a_telegram_group(telegram):
 
     runner, store = asyncio.run(scenario())
     texts = telegram.texts()
-    assert len(texts) == 4, texts  # accueil, statut, aide, refus : rien pour le message d'avant l'arrivée
+    assert len(texts) == 5, texts  # accueil, statut, aide, démarrage, refus : rien pour le message d'avant l'arrivée
     assert "enregistrement : actif" in texts[1]  # réponse à « Oscar, statut »
     assert "imv hermes" in texts[2]  # aide complète
-    assert "Bob Durand (#66)" in texts[3] and "réservé aux responsables" in texts[3]
+    assert "INC77" in texts[3] and store.session_incident(runner.session_id)["ref"] == "INC77"
+    assert "Bob Durand (#66)" in texts[4] and "réservé aux responsables" in texts[4]
     messages = [(m["author_name"], m["text"]) for m in store.messages(runner.session_id)]
     assert messages[0] == ("Bob Durand (#11)", "imv statut")
     assert ("Bob Durand (#11)", "imv aide") in messages
