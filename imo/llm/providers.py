@@ -231,15 +231,33 @@ class AzureOpenAIChat:
         return (response.choices[0].message.content or "").strip()
 
 
+# Consignes ajoutées au prompt système de chaque requête à Hermes, selon l'usage : portées par la
+# requête elle-même, elles valent quel que soit le réglage du profil Hermes.
+HERMES_ANALYSIS_MODE = (
+    "Mode analyse (consigne d'Oscar, prioritaire) : réponds uniquement à partir des messages et du "
+    "contexte fournis. N'utilise aucun outil : pas de recherche web, et n'enregistre rien en mémoire."
+)
+HERMES_TASK_MODE = """Mode tâche (consigne d'Oscar, prioritaire) :
+- Recherche web : 3 recherches au plus. Dans les requêtes, uniquement des termes techniques génériques \
+(code ou message d'erreur public, produit, version) ; jamais un nom interne lu dans la réunion ou le \
+contexte (serveur, application maison, domaine, adresse IP, client, projet, personne).
+- Si tu ne trouves pas, dis-le et indique ce que tu as cherché plutôt que de prolonger.
+- Mémoire : tu peux enregistrer une connaissance technique durable et générique (ex. « ORA-12541 : \
+vérifier d'abord le listener »), jamais le contenu de la réunion, un nom de personne, une information \
+interne à l'entreprise ni un secret.
+- Cite tes sources (URL)."""
+
+
 class HermesAgent:
     """Agent Hermes, par l'API compatible OpenAI d'un de ses profils (ex. /p/oscar/v1) : son modèle
-    et les outils que le profil autorise (recherche web, mémoire). Plus lent qu'un appel direct au
-    modèle quand il se sert de ses outils."""
+    et les outils que le profil autorise (recherche web, mémoire). `tasks` : client des tâches
+    confiées (imv hermes), qui peut se servir des outils ; sinon client des analyses, sans outil."""
 
-    def __init__(self, model: str, *, timeout: float = 300) -> None:
+    def __init__(self, model: str, *, tasks: bool = False, timeout: float = 300) -> None:
         import openai
 
         self.model = model
+        self.mode = HERMES_TASK_MODE if tasks else HERMES_ANALYSIS_MODE
         self.name = f"hermes:{model}"
         self._openai = openai
         key = os.environ.get("HERMES_API_KEY")
@@ -256,7 +274,10 @@ class HermesAgent:
         try:
             response = await self.client.chat.completions.create(
                 model=self.model,  # nom du profil, annoncé par /v1/models
-                messages=[{"role": "system", "content": system}, {"role": "user", "content": prompt}],
+                messages=[
+                    {"role": "system", "content": f"{system}\n\n{self.mode}"},
+                    {"role": "user", "content": prompt},
+                ],
             )
         except self._openai.APIStatusError as exc:
             raise LLMError(f"Hermes : {exc.status_code} {exc.message}") from exc
@@ -334,7 +355,8 @@ class Timed:
             metrics.record_llm(self.name, elapsed, ok)
 
 
-def make_llm(provider: str, model: str | None = None) -> LLM:
+def make_llm(provider: str, model: str | None = None, *, hermes_tasks: bool = False) -> LLM:
+    """`hermes_tasks` : client Hermes des tâches confiées (outils permis), sinon des analyses."""
     model = model or default_model(provider)
     if provider == "claude-cli":
         llm: LLM = ClaudeCLI(model)
@@ -345,7 +367,7 @@ def make_llm(provider: str, model: str | None = None) -> LLM:
     elif provider == "ollama":
         llm = Ollama(model)
     elif provider == "hermes":
-        llm = HermesAgent(model)
+        llm = HermesAgent(model, tasks=hermes_tasks)
     else:
         raise ValueError(f"Fournisseur LLM inconnu : {provider!r} (choix : {', '.join(PROVIDERS)})")
     return Timed(llm)

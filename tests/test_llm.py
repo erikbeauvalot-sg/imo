@@ -343,8 +343,24 @@ def test_hermes(monkeypatch):
     assert received["path"] == "/p/oscar/v1/chat/completions"
     assert received["authorization"] == "Bearer cle-oscar"
     assert received["body"]["model"] == "oscar"
-    assert received["body"]["messages"] == [
-        {"role": "system", "content": "système"}, {"role": "user", "content": "question"}]
+    system, user = received["body"]["messages"]
+    assert user == {"role": "user", "content": "question"}
+    # Client des analyses : consigne « sans outil ni mémoire » ajoutée au prompt d'IMV
+    assert system["content"].startswith("système\n\nMode analyse") and "aucun outil" in system["content"]
+
+
+def test_hermes_task_mode(monkeypatch):
+    server, received = _hermes_server()
+    monkeypatch.setenv("HERMES_API_URL", f"http://127.0.0.1:{server.server_port}/v1")
+    monkeypatch.setenv("HERMES_API_KEY", "cle")
+    try:
+        asyncio.run(make_llm("hermes", hermes_tasks=True).complete("système", "tâche"))
+    finally:
+        server.shutdown()
+    system = received["body"]["messages"][0]["content"]
+    assert system.startswith("système\n\nMode tâche")
+    for rule in ("3 recherches au plus", "jamais un nom interne", "jamais le contenu de la réunion", "sources"):
+        assert rule in system, rule
 
 
 @pytest.mark.parametrize(

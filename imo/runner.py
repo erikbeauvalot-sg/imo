@@ -96,10 +96,8 @@ class MeetingRunner:
         )
         self.llm = make_llm(config.llm, config.llm_model) if config.llm else None
         # Agent Hermes pour « imv hermes <tâche> » : disponible dès que HERMES_API_KEY est défini,
-        # quel que soit le LLM des analyses.
-        self.hermes = self.llm if config.llm == "hermes" else (
-            make_llm("hermes") if os.environ.get("HERMES_API_KEY") else None
-        )
+        # quel que soit le LLM des analyses ; client distinct, qui peut se servir des outils.
+        self.hermes = make_llm("hermes", hermes_tasks=True) if os.environ.get("HERMES_API_KEY") else None
         self.context_path = resolve_context_path(config.context)
         self.context = load_context(self.context_path) if self.llm or self.hermes else None
         # Options gardées en base : la session peut être relancée à l'identique depuis l'interface web.

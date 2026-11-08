@@ -307,3 +307,14 @@ def test_server_runs_agent_commands_through_the_api(fake_teams, tmp_path):
         assert r.status_code == 200
         data = _wait(client, session_id, lambda d: not d["meeting"]["live"])
         assert data["meeting"]["status"] == "ended"
+
+
+def test_runner_uses_separate_hermes_clients_for_analyses_and_tasks(monkeypatch):
+    from imo.llm.providers import HERMES_ANALYSIS_MODE, HERMES_TASK_MODE
+
+    monkeypatch.setenv("HERMES_API_KEY", "cle")
+    runner = MeetingRunner(_config(llm="hermes"), Store(":memory:"))
+    assert runner.llm.llm.mode == HERMES_ANALYSIS_MODE  # analyses : sans outil
+    assert runner.hermes.llm.mode == HERMES_TASK_MODE  # imv hermes : outils permis
+    monkeypatch.delenv("HERMES_API_KEY")
+    assert MeetingRunner(_config(), Store(":memory:")).hermes is None
