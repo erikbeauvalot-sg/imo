@@ -319,6 +319,16 @@ class IncidentAgent:
             )
         return await self.reply(text, kind="welcome")
 
+    async def farewell(self) -> bool:
+        """Au revoir posté avant de quitter la réunion (bouton « Quitter la réunion » de l'interface)."""
+        return await self.reply(
+            self._t(
+                "Je quitte la réunion : le suivi par IMV s'arrête ici. Merci à tous.",
+                "I'm leaving the meeting: IMV follow-up stops here. Thank you all.",
+            ),
+            kind="farewell",
+        )
+
     def start_incident(self, ref: str | None, im_name: str | None = None) -> None:
         self.store.start_incident(self.session_id, ref, im_name)
         log.info("Suivi de l'incident %s démarré", ref or "(sans référence)")

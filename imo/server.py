@@ -242,7 +242,7 @@ def create_app(db: Path | str, defaults: MeetingConfig, allowed_hosts: list[str]
 
     @app.delete("/api/meetings/{session_id}", status_code=202)
     async def stop_meeting(session_id: int) -> dict:
-        live_runner(session_id).stop()
+        live_runner(session_id).stop(farewell=True)
         return describe_id(session_id)
 
     @app.post("/api/meetings/{session_id}/chat")

@@ -112,10 +112,12 @@ class MeetingRunner:
         self.agent: IncidentAgent | None = None
         self._stop = asyncio.Event()
         self._stop_reason: str | None = None  # code enregistré en base (ex. server_shutdown)
+        self._farewell = False  # message d'au revoir avant de quitter
 
-    def stop(self, reason: str | None = None) -> None:
-        """Quitte la réunion (si elle est rejointe) et termine run()."""
+    def stop(self, reason: str | None = None, *, farewell: bool = False) -> None:
+        """Quitte la réunion (si elle est rejointe) et termine run() ; `farewell` : prévient le chat avant."""
         self._stop_reason = self._stop_reason or reason
+        self._farewell = self._farewell or farewell
         self._stop.set()
 
     def _set_status(self, status: str, error_code: str | None = None) -> None:
@@ -213,6 +215,8 @@ class MeetingRunner:
                 log.info("Fin de session : %s", ended.result())
                 await _quietly(session.snapshot("chat-end"), 10)
             else:
+                if self._farewell and not agent.closing:  # « imv clore » a déjà dit au revoir
+                    await _quietly(agent.farewell(), 10)
                 # Quitter d'abord : la capture de diagnostic (lente sur un vrai Teams) ne doit pas
                 # retarder le départ, ni l'empêcher si l'arrêt du serveur est pressé.
                 await _quietly(session.snapshot("chat-end"), 5)

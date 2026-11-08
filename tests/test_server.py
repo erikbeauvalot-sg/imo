@@ -69,6 +69,26 @@ def test_runner_joins_reads_and_stops(fake_teams, caplog):
     asyncio.run(scenario())
 
 
+def test_stop_from_the_page_says_goodbye_before_leaving(fake_teams):
+    async def scenario():
+        store = Store(":memory:")
+        runner = MeetingRunner(_config(managers=["Bob Durand"], welcome=False, captions_language="en"), store)
+        task = asyncio.create_task(runner.run())
+        deadline = time.monotonic() + 15
+        while runner.agent is None or store.count_messages(runner.session_id) < 1:
+            assert not task.done() and time.monotonic() < deadline, runner.events
+            await asyncio.sleep(0.1)
+        runner.stop(farewell=True)
+        assert await asyncio.wait_for(task, 10) == 0
+        return runner, store
+
+    runner, store = asyncio.run(scenario())
+    assert runner.status == "ended"
+    farewell = store.interventions(runner.session_id)[-1]
+    assert farewell["type"] == "farewell" and farewell["delivered"]
+    assert farewell["content"] == "I'm leaving the meeting: IMV follow-up stops here. Thank you all."
+
+
 def test_runner_leaves_after_imv_clore(fake_teams):
     async def scenario():
         store = Store(":memory:")
