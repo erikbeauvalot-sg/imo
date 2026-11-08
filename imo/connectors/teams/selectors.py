@@ -124,6 +124,7 @@ LANGUAGE_SPEECH_MENU = [
     '[data-tid="LanguageSpeechMenuControl-id"]',
     '[role="menuitem"]:has-text("Language and speech")',
     'button:has-text("Language and speech")',
+    '[role="menuitem"]:has-text("Language")',
 ]
 CAPTIONS_ON = [
     '[data-tid="closed-captions-button"]',
@@ -132,6 +133,8 @@ CAPTIONS_ON = [
     '[role="menuitem"]:has-text("Show live captions")',
     'button:has-text("Turn on live captions")',
     '[role="menuitem"]:has-text("Captions")',
+    '[role="menuitem"]:has-text("captions")',
+    '[role="menuitemcheckbox"]:has-text("aptions")',
 ]
 # Zone des sous-titres, présente une fois activés (la lecture est dans captions_reader.js)
 CAPTIONS_CONTAINER = [

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from pathlib import Path
 
 import pytest
@@ -353,7 +354,9 @@ def test_captions_become_transcript_messages():
     assert state["matchedContainer"] == '[data-tid="closed-captions-renderer"]'
 
 
-def test_captions_unavailable():
+def test_captions_unavailable(caplog):
+    caplog.set_level(logging.INFO, logger="imo")
+
     async def scenario():
         session = await _session("?lobby=100&nocaptions=1")
         try:
@@ -363,3 +366,7 @@ def test_captions_unavailable():
             await session.close()
 
     assert asyncio.run(scenario()) is False
+    # Diagnostic : contenu du menu More journalisé pour ajuster les sélecteurs
+    assert "Sous-titres, menu More : Settings" in caplog.text
+    # Diagnostic : contenu du menu More journalisé pour ajuster les sélecteurs
+    assert "Sous-titres, menu More : Settings" in caplog.text

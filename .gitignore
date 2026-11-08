@@ -7,3 +7,4 @@ debug/
 .env
 contexte.md
 .claude/settings.local.json
+.claude/settings.json

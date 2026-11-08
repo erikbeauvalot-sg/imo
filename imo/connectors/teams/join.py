@@ -359,23 +359,62 @@ class TeamsSession:
         if await self._present(sel.CAPTIONS_CONTAINER):
             return True
         deadline = time.monotonic() + timeout
+        first = True
         while time.monotonic() < deadline:
-            if await self._click_first(sel.CAPTIONS_ON) or (
-                await self._click_first(sel.MORE_BUTTON)
-                and await self._wait_click(sel.LANGUAGE_SPEECH_MENU, 3)
-                and await self._wait_click(sel.CAPTIONS_ON, 3)
-            ):
+            if await self._click_first(sel.CAPTIONS_ON) or await self._captions_from_menu(first):
                 await self.snapshot("captions-menu")
-                for _ in range(20):
-                    if await self._present(sel.CAPTIONS_CONTAINER):
-                        log.info("Sous-titres en direct activés")
-                        await self.snapshot("captions-on")
-                        return True
-                    await page.wait_for_timeout(250)
+                if await self._wait_present(sel.CAPTIONS_CONTAINER, 5):
+                    log.info("Sous-titres en direct activés")
+                    await self.snapshot("captions-on")
+                    return True
             await page.keyboard.press("Escape")  # referme un menu resté ouvert
-            await page.wait_for_timeout(1000)
+            # Raccourci Teams des sous-titres (Alt+Maj+C sous Windows, l'agent s'annonce comme Windows)
+            await page.keyboard.press("Alt+Shift+KeyC")
+            if await self._wait_present(sel.CAPTIONS_CONTAINER, 2):
+                log.info("Sous-titres en direct activés (raccourci clavier)")
+                await self.snapshot("captions-on")
+                return True
+            first = False
         await self.snapshot("captions-failed")
         log.warning("Sous-titres en direct indisponibles : la voix ne sera pas transcrite")
+        return False
+
+    async def _captions_from_menu(self, diagnose: bool) -> bool:
+        """More → Language and speech → Turn on live captions. Au premier essai, journalise et
+        capture le contenu de chaque menu : il varie selon la version de Teams et le tenant."""
+        if not await self._click_first(sel.MORE_BUTTON):
+            if diagnose:
+                log.info("Sous-titres : bouton « More » introuvable")
+            return False
+        await self._require_page().wait_for_timeout(800)  # menu animé
+        if diagnose:
+            log.info("Sous-titres, menu More : %s", " | ".join(await self._menu_items()) or "(vide)")
+            await self.snapshot("captions-more")
+        if not await self._wait_click(sel.LANGUAGE_SPEECH_MENU, 3):
+            return False
+        await self._require_page().wait_for_timeout(800)
+        if diagnose:
+            log.info("Sous-titres, menu Language and speech : %s", " | ".join(await self._menu_items()) or "(vide)")
+            await self.snapshot("captions-speech")
+        return await self._wait_click(sel.CAPTIONS_ON, 3)
+
+    async def _menu_items(self) -> list[str]:
+        """Libellés des entrées de menu visibles (hors vignettes vidéo, qui ont aussi role=menuitem)."""
+        return await self._require_page().evaluate(
+            """() => [...document.querySelectorAll(
+                    '[role=menuitem], [role=menuitemcheckbox], [role=menuitemradio]')]
+                .filter((el) => el.offsetParent !== null && !el.closest('[data-tid="only-videos-wrapper"]')
+                    && !el.querySelector('video'))
+                .map((el) => (el.innerText || el.getAttribute('aria-label') || '').trim().replace(/\\s+/g, ' '))
+                .filter((t) => t && t.length < 80)"""
+        )
+
+    async def _wait_present(self, selectors: list[str], timeout: float) -> bool:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if await self._present(selectors):
+                return True
+            await self._require_page().wait_for_timeout(250)
         return False
 
     async def read_captions(self, on_message: Callable[[ChatMessage], None]) -> None:

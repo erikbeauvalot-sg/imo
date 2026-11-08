@@ -151,11 +151,26 @@ function renderList(meetings) {
       <div class="url">${esc(m.incident ? m.incident + " · " : "")}${esc(m.url)}</div>
     </div>`).join("");
   for (const el of $("list").querySelectorAll(".item")) {
-    el.onclick = () => { selected = Number(el.dataset.id); $("detail").innerHTML = ""; refresh(); };
+    el.onclick = () => { selected = Number(el.dataset.id); $("detail").innerHTML = ""; lastRendered = ""; refresh(); };
   }
 }
 
+// Le détail est redessiné toutes les 2 s : défilement suivi tant que l'on est en bas d'une zone,
+// position conservée si l'on remonte lire.
+function keepScroll(id) {
+  const el = $(id);
+  const atBottom = !el || el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+  const top = el ? el.scrollTop : 0;
+  return () => { const now = $(id); now.scrollTop = atBottom ? now.scrollHeight : top; };
+}
+
+let lastRendered = "";
+
 function renderDetail(data) {
+  // Rien de nouveau : pas de redessin (le texte sélectionné et le défilement restent intacts).
+  const key = JSON.stringify(data);
+  if (key === lastRendered) return;
+  lastRendered = key;
   const m = data.meeting;
   const chips = [
     m.incident && `Incident ${m.incident}`,
@@ -167,8 +182,7 @@ function renderDetail(data) {
     `${m.messages} message(s)`,
   ].filter(Boolean);
   const active = (m.status === "joining" || m.status === "in_meeting") && !m.stopping;
-  const feedEl = $("feed");
-  const atBottom = !feedEl || feedEl.scrollHeight - feedEl.scrollTop - feedEl.clientHeight < 40;
+  const scroll = { feed: keepScroll("feed"), events: keepScroll("events") };
   const openEvents = $("events-box")?.open;
 
   $("detail").innerHTML = `
@@ -182,10 +196,10 @@ function renderDetail(data) {
     <div class="feed" id="feed">${data.feed.length ? data.feed.map((f) => `
       <div class="msg ${esc(f.kind)}"><span class="meta">${esc(hour(f.time))}</span><span class="who">${esc(f.author)}${f.kind === "transcript" ? " (oral)" : ""}${f.kind === "agent-undelivered" ? " (non publié)" : ""}</span>${esc(f.text)}</div>`).join("")
       : `<div class="empty">Pas encore de message.</div>`}</div>
-    <details id="events-box"${openEvents ? " open" : ""}><summary>Journal de l'agent</summary><pre class="events">${esc(data.events.join("\n")) || "—"}</pre></details>`;
+    <details id="events-box"${openEvents ? " open" : ""}><summary>Journal de l'agent</summary><pre class="events" id="events">${esc(data.events.join("\n")) || "—"}</pre></details>`;
   $("stop").onclick = async () => { $("stop").disabled = true; await api(`/api/meetings/${m.id}`, { method: "DELETE" }); refresh(); };
-  // Défilement suivi tant que l'on est en bas du fil ; position conservée si l'on remonte lire.
-  $("feed").scrollTop = atBottom ? $("feed").scrollHeight : feedEl.scrollTop;
+  scroll.feed();
+  scroll.events();
 }
 
 async function refresh() {
