@@ -164,6 +164,7 @@ class MeetingRunner:
                 llm=self.llm,
                 context=self.context,
                 managers=config.managers,
+                on_close=self.stop,  # « imv clore » : quitte la réunion une fois le résumé publié
             )
             if config.incident:
                 agent.start_incident(config.incident)

@@ -71,19 +71,28 @@
     if (endAfter) setTimeout(() => { app.innerHTML = '<p>Meeting ended</p>'; }, endAfter);
   }
 
-  // Sous-titres : More → Language and speech → Turn on live captions (absents avec ?nocaptions=1)
+  // Sous-titres : More → Captions, comme le vrai Teams pour un invité (08/11/2026) ;
+  // ?captionsmenu=speech : ancien parcours More → Language and speech → Turn on live captions ;
+  // ?nocaptions=1 : pas de sous-titres.
+  function showCaptions() {
+    document.getElementById('menu').innerHTML = '';
+    document.getElementById('captions').innerHTML = '<div data-tid="closed-captions-renderer"></div>';
+  }
   function openMoreMenu() {
     const menu = document.getElementById('menu');
-    menu.innerHTML = params.get('nocaptions') ? '<div role="menu"><div role="menuitem">Settings</div></div>' :
-      '<div role="menu"><div role="menuitem" data-tid="LanguageSpeechMenuControl-id">Language and speech</div></div>';
-    const speech = menu.querySelector('[data-tid="LanguageSpeechMenuControl-id"]');
-    if (speech) speech.onclick = () => {
-      menu.innerHTML = '<div role="menu"><div role="menuitem">Turn on live captions</div></div>';
-      menu.querySelector('[role="menuitem"]').onclick = () => {
-        menu.innerHTML = '';
-        document.getElementById('captions').innerHTML = '<div data-tid="closed-captions-renderer"></div>';
+    if (params.get('nocaptions')) {
+      menu.innerHTML = '<div role="menu"><div role="menuitem">Meeting info</div><div role="menuitem">Settings</div></div>';
+    } else if (params.get('captionsmenu') === 'speech') {
+      menu.innerHTML = '<div role="menu"><div role="menuitem" data-tid="LanguageSpeechMenuControl-id">Language and speech</div></div>';
+      menu.querySelector('[data-tid="LanguageSpeechMenuControl-id"]').onclick = () => {
+        menu.innerHTML = '<div role="menu"><div role="menuitem">Turn on live captions</div></div>';
+        menu.querySelector('[role="menuitem"]').onclick = showCaptions;
       };
-    };
+    } else {
+      menu.innerHTML = '<div role="menu"><div role="menuitem" data-tid="meeting-info-button">Meeting info</div>' +
+        '<div role="menuitem" data-tid="closed-captions-button">Captions</div></div>';
+      menu.querySelector('[data-tid="closed-captions-button"]').onclick = showCaptions;
+    }
   }
   // Comme Teams : une ligne par prise de parole, dont le texte s'allonge pendant qu'on parle.
   window.caption = (id, author, text) => {

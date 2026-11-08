@@ -36,7 +36,7 @@
   .row { display: flex; gap: 8px; align-items: center; justify-content: space-between; margin-top: 12px; }
   .error { color: var(--bad); font-size: 13px; margin-top: 8px; white-space: pre-wrap; }
   .hint { color: var(--muted); font-size: 12px; margin-top: 6px; }
-  .list { display: flex; flex-direction: column; gap: 6px; margin-top: 4px; }
+  .list { display: flex; flex-direction: column; gap: 6px; margin-top: 4px; max-height: 60vh; overflow-y: auto; }
   .item { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; cursor: pointer; }
   .item.selected { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
   .item .top { display: flex; justify-content: space-between; gap: 8px; }
@@ -56,6 +56,12 @@
   summary { cursor: pointer; color: var(--muted); }
   pre.events { max-height: 22vh; overflow: auto; font-size: 12px; background: var(--bg); padding: 8px; border-radius: 6px; white-space: pre-wrap; overflow-wrap: anywhere; }
   .empty { color: var(--muted); padding: 20px 0; text-align: center; }
+  .s-interrupted { color: var(--warn); }
+  .msg.manual, .msg.manual-undelivered { background: var(--agent); border-left: 3px solid var(--ok); }
+  .item .when { color: var(--muted); font-size: 12px; }
+  #compose { display: none; gap: 8px; margin-top: 10px; align-items: flex-end; }
+  #compose textarea { flex: 1; min-height: 40px; max-height: 160px; resize: vertical; padding: 7px 9px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--text); font: inherit; }
+  #compose-error { margin-top: 4px; }
 </style>
 </head>
 <body>
@@ -85,19 +91,33 @@
       </form>
     </section>
     <section>
-      <h2>Réunions</h2>
-      <div class="list" id="list"><div class="empty">Aucun agent lancé.</div></div>
+      <h2>Sessions</h2>
+      <div class="list" id="list"><div class="empty">Aucune session.</div></div>
     </section>
   </div>
-  <section id="detail"><div class="empty">Sélectionnez une réunion.</div></section>
+  <section id="detail">
+    <div id="detail-body"><div class="empty">Sélectionnez une réunion.</div></div>
+    <!-- Hors de detail-body : le texte en cours de saisie survit au rafraîchissement. -->
+    <form id="compose">
+      <textarea id="compose-text" maxlength="4000" placeholder="Écrire dans le chat de la réunion, au nom de l'agent (Entrée pour envoyer, Maj+Entrée pour aller à la ligne)"></textarea>
+      <button id="compose-send">Envoyer</button>
+    </form>
+    <div class="error" id="compose-error"></div>
+  </section>
 </main>
 <script>
-const STATUS = { joining: "Connexion…", in_meeting: "En réunion", ended: "Terminée", failed: "Échec" };
+const STATUS = { joining: "Connexion…", in_meeting: "En réunion", ended: "Terminée", failed: "Échec", interrupted: "Interrompue" };
 let selected = null;
 
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const hour = (iso) => new Date(iso).toLocaleTimeString("fr-FR");
+// Heure seule aujourd'hui, date et heure pour les sessions plus anciennes.
+const when = (iso) => {
+  const d = new Date(iso);
+  const time = d.toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" });
+  return d.toDateString() === new Date().toDateString() ? time : `${d.toLocaleDateString("fr-FR", { day: "2-digit", month: "2-digit" })} ${time}`;
+};
 const statusLabel = (m) => m.stopping ? "Arrêt…" : STATUS[m.status] || m.status;
 
 async function api(path, options = {}) {
@@ -144,14 +164,15 @@ $("form").addEventListener("submit", async (e) => {
 });
 
 function renderList(meetings) {
-  if (!meetings.length) { $("list").innerHTML = `<div class="empty">Aucun agent lancé.</div>`; return; }
+  if (!meetings.length) { $("list").innerHTML = `<div class="empty">Aucune session.</div>`; return; }
   $("list").innerHTML = meetings.map((m) => `
     <div class="item${m.id === selected ? " selected" : ""}" data-id="${m.id}">
       <div class="top"><strong>#${m.id} ${esc(m.name)}</strong><span class="status s-${esc(m.status)}">${esc(statusLabel(m))}</span></div>
+      <div class="when">${esc(when(m.created_at))}${m.messages ? ` · ${m.messages} message(s)` : ""}</div>
       <div class="url">${esc(m.incident ? m.incident + " · " : "")}${esc(m.url)}</div>
     </div>`).join("");
   for (const el of $("list").querySelectorAll(".item")) {
-    el.onclick = () => { selected = Number(el.dataset.id); $("detail").innerHTML = ""; lastRendered = ""; refresh(); };
+    el.onclick = () => { selected = Number(el.dataset.id); $("detail-body").innerHTML = ""; lastRendered = ""; refresh(); };
   }
 }
 
@@ -172,32 +193,39 @@ function renderDetail(data) {
   if (key === lastRendered) return;
   lastRendered = key;
   const m = data.meeting;
-  const chips = [
+  // Réglages de l'agent : seulement pendant la session (l'historique ne les conserve pas).
+  const chips = (m.live ? [
     m.incident && `Incident ${m.incident}`,
     m.llm ? `LLM ${m.llm}` : "Sans LLM",
     m.transcribing ? "Voix transcrite" : m.captions && m.status === "in_meeting" && "Sous-titres indisponibles",
     m.paused && "En pause",
     m.managers.length ? `IM : ${m.managers.join(", ")}` : "IM : premier à taper une commande",
     m.open_to_all && "Commandes ouvertes à tous",
-    `${m.messages} message(s)`,
-  ].filter(Boolean);
-  const active = (m.status === "joining" || m.status === "in_meeting") && !m.stopping;
+  ] : [
+    m.incident && `Incident ${m.incident}`,
+    `Début ${when(m.created_at)}`,
+    m.ended_at && `Fin ${when(m.ended_at)}`,
+  ]).concat(`${m.messages} message(s)`).filter(Boolean);
+  const active = m.live && !m.stopping;
+  const canWrite = active && m.status === "in_meeting";
+  $("compose").style.display = canWrite ? "flex" : "none";
+  if (!canWrite) $("compose-error").textContent = "";
   const scroll = { feed: keepScroll("feed"), events: keepScroll("events") };
   const openEvents = $("events-box")?.open;
 
-  $("detail").innerHTML = `
+  $("detail-body").innerHTML = `
     <div class="row" style="margin-top:0">
       <h2 style="margin:0">#${m.id} ${esc(m.name)} — <span class="status s-${esc(m.status)}">${esc(statusLabel(m))}</span></h2>
-      <button class="secondary" id="stop"${active ? "" : " disabled"}>Quitter la réunion</button>
+      ${m.live ? `<button class="secondary" id="stop"${active ? "" : " disabled"}>Quitter la réunion</button>` : ""}
     </div>
     <div class="url hint">${esc(m.url)}</div>
     ${m.error ? `<div class="error">${esc(m.error)}</div>` : ""}
     <div class="chips">${chips.map((c) => `<span class="chip">${esc(c)}</span>`).join("")}</div>
     <div class="feed" id="feed">${data.feed.length ? data.feed.map((f) => `
-      <div class="msg ${esc(f.kind)}"><span class="meta">${esc(hour(f.time))}</span><span class="who">${esc(f.author)}${f.kind === "transcript" ? " (oral)" : ""}${f.kind === "agent-undelivered" ? " (non publié)" : ""}</span>${esc(f.text)}</div>`).join("")
+      <div class="msg ${esc(f.kind)}"><span class="meta">${esc(hour(f.time))}</span><span class="who">${esc(f.author)}${f.kind === "transcript" ? " (oral)" : ""}${f.kind.startsWith("manual") ? " (depuis l'interface)" : ""}${f.kind.endsWith("-undelivered") ? " (non publié)" : ""}</span>${esc(f.text)}</div>`).join("")
       : `<div class="empty">Pas encore de message.</div>`}</div>
-    <details id="events-box"${openEvents ? " open" : ""}><summary>Journal de l'agent</summary><pre class="events" id="events">${esc(data.events.join("\n")) || "—"}</pre></details>`;
-  $("stop").onclick = async () => { $("stop").disabled = true; await api(`/api/meetings/${m.id}`, { method: "DELETE" }); refresh(); };
+    <details id="events-box"${openEvents ? " open" : ""}><summary>Journal de l'agent</summary><pre class="events" id="events">${esc(data.events.join("\n")) || (m.live ? "—" : "Journal disponible seulement pendant la session.")}</pre></details>`;
+  if ($("stop")) $("stop").onclick = async () => { $("stop").disabled = true; await api(`/api/meetings/${m.id}`, { method: "DELETE" }); refresh(); };
   scroll.feed();
   scroll.events();
 }
@@ -212,6 +240,27 @@ async function refresh() {
     console.error(err);
   }
 }
+
+async function sendToChat() {
+  const text = $("compose-text").value.trim();
+  if (!text || selected === null) return;
+  $("compose-send").disabled = true;
+  $("compose-error").textContent = "";
+  try {
+    await api(`/api/meetings/${selected}/chat`, { method: "POST", body: JSON.stringify({ text }) });
+    $("compose-text").value = "";
+    await refresh();
+  } catch (err) {
+    $("compose-error").textContent = err.message;
+  } finally {
+    $("compose-send").disabled = false;
+    $("compose-text").focus();
+  }
+}
+$("compose").addEventListener("submit", (e) => { e.preventDefault(); sendToChat(); });
+$("compose-text").addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); sendToChat(); }
+});
 
 loadOptions().catch((err) => { $("form-error").textContent = err.message; });
 refresh();

@@ -73,10 +73,19 @@ Un invité ne peut pas être @mentionné : les commandes commencent par `imv`.
 | `imv actions` | Actions identifiées, owners, statuts |
 | `imv com [direction\|utilisateurs\|tech]` | Brouillon de communication pour l'audience choisie |
 | `imv ? <question>` | Question libre : réponse tirée du chat, complétée si utile par des pistes |
+| `imv rapport` | Aperçu du résumé de fin, sans clore |
+| `imv clore` | Clôture (responsable uniquement) : publie le résumé de fin, marque l'incident clos et quitte la réunion |
 
 | `imv autoriser <nom>` / `imv autoriser tous` | Autorise une personne, ou tout le monde (responsable uniquement) |
 | `imv retirer <nom>` / `imv retirer tous` | Retire une autorisation, ou réserve de nouveau les commandes (responsable uniquement) |
 | `imv autorisés` | Responsable et personnes autorisées |
+
+#### Fin de l'incident
+
+Quand quelqu'un annonce dans le chat, ou à l'oral avec `--captions`, que l'incident est terminé (« c'est résolu », « le service est rétabli », « on peut clore »…), l'agent demande au responsable s'il faut clore. Le responsable répond « oui » dans les 10 minutes, ou tape `imv clore`. L'agent publie alors le résumé de fin (incident et durée, résumé, chronologie, cause, résolution, actions restantes, points pour le post-mortem), puis quitte la réunion. Il ne clôt jamais de lui-même.
+
+- La proposition n'est faite qu'une fois par période de 10 minutes, jamais en pause, et pas pour une phrase négative (« ce n'est pas encore résolu »).
+- Sans `--llm`, le résumé de fin se limite aux faits enregistrés : nombre de messages, heures, participants.
 
 #### Qui peut utiliser les commandes
 
@@ -124,13 +133,13 @@ d'authentification. Vérifier ensuite avec
 .venv/bin/python imo_agent.py serve --llm azure-openai    # puis ouvrir http://127.0.0.1:8765
 ```
 
-La page permet de lancer un agent dans une réunion (lien, nom, responsables, incident, LLM, transcription de la voix, avatar), de suivre chaque réunion en direct (messages du chat, phrases dites à l'oral, réponses d'IMV, journal de l'agent) et de faire quitter la réunion à un agent. Chaque agent a son propre navigateur, caché ; tous partagent la même base (`--db`) et le même `contexte.md`.
+La page permet de lancer un agent dans une réunion (lien, nom, responsables, incident, LLM, transcription de la voix, avatar), de suivre chaque réunion en direct (messages du chat, phrases dites à l'oral, réponses d'IMV, journal de l'agent), d'**écrire dans le chat de la réunion** au nom de l'agent et de faire quitter la réunion à un agent. L'**historique** des sessions (y compris celles lancées avec `join`) reste consultable après un redémarrage du serveur : il est lu dans la base. Une session restée ouverte lors d'un arrêt brutal apparaît comme « Interrompue » ; le journal de l'agent n'est disponible que pendant la session. Chaque agent a son propre navigateur, caché ; tous partagent la même base (`--db`) et le même `contexte.md`.
 
 - Options : `--port` (défaut 8765), `--llm`/`--llm-model` (fournisseur proposé par défaut dans la page), `--context`, `--browser`, `--show`, `--admission-timeout`, `--debug-dir` (un sous-dossier `session-<n>` par réunion), `-v`.
 - Le serveur n'écoute que `127.0.0.1` et n'a pas d'authentification : il est réservé à votre poste.
 - Ctrl+C arrête le serveur ; chaque agent quitte alors sa réunion.
 - Comptez environ 300 à 500 Mo de mémoire par réunion.
-- API JSON, utilisable depuis un script : `POST /api/meetings` (`{"url": "...", "name": "...", "im": ["..."], "captions": true}`), `GET /api/meetings`, `GET /api/meetings/<id>/feed`, `DELETE /api/meetings/<id>`.
+- API JSON, utilisable depuis un script : `POST /api/meetings` (`{"url": "...", "name": "...", "im": ["..."], "captions": true}`), `GET /api/meetings` (historique compris), `GET /api/meetings/<id>/feed`, `POST /api/meetings/<id>/chat` (`{"text": "..."}`), `DELETE /api/meetings/<id>`.
 
 ### Historique
 
@@ -166,4 +175,4 @@ Les tests rejouent le parcours (pré-connexion, salle d'attente, admission, chat
 - L'agent reconnaît ses propres messages par son nom ou par leur texte : à vérifier sur le vrai Teams, qui peut les afficher sans auteur.
 - Les messages postés par d'autres bots, les modifications et suppressions de messages ne sont pas encore gérés.
 - L'analyse relit tout le chat à chaque commande (pas encore d'état structuré ni de résumé glissant) : suffisant pour des calls de quelques heures.
-- Pas encore de suggestions proactives ni de commandes `com` et `clore` (Étape 2b/2c).
+- Suggestions proactives limitées à deux cas : secret collé dans le chat, et fin d'incident évoquée (Étape 2b).

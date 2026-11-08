@@ -11,7 +11,7 @@ from collections import deque
 from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass
 
-from imo.analysis import TASKS, UsageError, analyze, contains_secret
+from imo.analysis import TASKS, UsageError, analyze, contains_secret, local_hour
 from imo.llm import LLM, LLMError
 from imo.models import ChatMessage
 from imo.sinks import Sink
@@ -36,6 +36,8 @@ HELP = (
     "imv timeline : chronologie des événements\n"
     "imv actions : actions identifiées et owners\n"
     "imv com [direction|utilisateurs|tech] : brouillon de communication\n"
+    "imv rapport : aperçu du résumé de fin\n"
+    "imv clore : clôture l'incident, publie le résumé de fin et quitte la réunion (responsable)\n"
     "imv ? <question> : question libre sur l'incident\n"
     "imv statut : état de l'agent\n"
     "imv pause / imv reprise : suspend / reprend l'enregistrement du chat\n"
@@ -63,13 +65,16 @@ _ALIASES = {
     "revoke": "retirer",
     "autorises": "autorises",
     "acces": "autorises",
+    "clore": "clore",
+    "cloturer": "clore",
+    "close": "clore",
 }
 # Commandes ouvertes à tous, et commandes réservées aux responsables.
 _PUBLIC = {"aide"}
-_MANAGER_ONLY = {"autoriser", "retirer"}
+_MANAGER_ONLY = {"autoriser", "retirer", "clore"}
 _EVERYONE = {"tous", "tout le monde", "all", "everyone"}
 # Commandes prévues plus tard : reconnues, mais pas encore disponibles.
-_LATER = {"clore"}
+_LATER: set[str] = set()
 # Orthographe affichée des formes canoniques qui portent un accent.
 _DISPLAY = {"demarrer": "démarrer", "resume": "résumé", "ask": "?", "autorises": "autorisés"}
 
@@ -108,6 +113,29 @@ def parse_command(text: str) -> Command | None:
     return Command(_ALIASES.get(canonical, canonical) or "aide", word or "aide", m["arg"].strip())
 
 
+# Fin d'incident annoncée dans la conversation (chat ou oral, texte sans accents ni majuscules) :
+# l'agent propose alors la clôture au responsable, sans jamais clore de lui-même.
+_INCIDENT_OVER = re.compile(
+    r"\b(incident|probleme|souci|panne|ticket)\s+(est\s+|semble\s+|bien\s+)*(clos|cloture|ferme|termine|fini|resolu|regle)\b"
+    r"|\b(c'?est|tout est|tout c'?est)\s+(bien\s+)?(resolu|regle|rentre dans l'ordre)\b"
+    r"|\b(service|site|appli|application)\s+(est\s+)?(retabli|revenu|de nouveau disponible)\b"
+    r"|\bca (re)?(marche|fonctionne) (a nouveau|de nouveau)\b|\bca (re)?marche\b|\bca refonctionne\b"
+    r"|\bon (peut|va) (clore|cloturer|fermer le pont|couper|raccrocher|terminer)\b"
+    r"|\bfin de (l'?incident|la crise|la cellule)\b"
+    r"|\b(issue|incident|problem)\s+(is\s+)?(resolved|fixed|closed|over)\b|\bwe can close\b"
+)
+# Négation dans la phrase (« pas encore résolu », « ça ne marche plus ») ; « plus » seul peut être
+# positif (« ça remarche, plus d'erreurs »).
+_NEGATION = re.compile(r"\b(pas|ne|not|never|jamais|aucunement)\b|\bn'|n't\b")
+# Réponse d'un responsable à la proposition de clôture (même normalisation)
+_YES = {"oui", "yes", "ok", "go", "vas-y", "vas y", "oui vas-y", "oui on clot", "oui clore", "on clot", "oui merci"}
+CLOSE_PROPOSAL_DELAY = 600  # secondes : délai de réponse, et minimum entre deux propositions
+
+
+def _plain(text: str) -> str:
+    return " ".join(_strip_accents(text).lower().replace("’", "'").split())
+
+
 class IncidentAgent:
     """Traite le flux de messages d'une session : enregistrement, commandes, réponses."""
 
@@ -122,6 +150,7 @@ class IncidentAgent:
         llm: LLM | None = None,
         context: str | None = None,
         managers: Iterable[str] = (),
+        on_close: Callable[[], None] | None = None,
     ) -> None:
         self.store = store
         self.session_id = session_id
@@ -145,6 +174,10 @@ class IncidentAgent:
         self._refused: set[str] = set()  # refus déjà expliqués : une seule réponse par personne
         # Voix transcrite (sous-titres Teams) : annoncée dans l'accueil.
         self.transcribing = False
+        # Clôture : on_close fait quitter la réunion (runner) une fois le résumé de fin publié.
+        self.on_close = on_close
+        self.closing = False
+        self._close_proposed_at: float | None = None
 
     async def welcome(self) -> bool:
         text = WELCOME
@@ -177,14 +210,19 @@ class IncidentAgent:
             return
         if not self.paused and self.store.add_message(self.session_id, msg) and self.sink:
             self.sink.write(msg)
-        if msg.source != "chat":
+        if msg.backlog or msg.source not in ("chat", "transcript"):
+            return
+        if msg.source == "transcript":  # oral : jamais de commande, mais la fin d'incident compte
+            await self._propose_close_if_over(msg)
             return
         self._seen.setdefault(_name_key(msg.sender), msg.sender)
-        if msg.backlog:
-            return
         command = parse_command(msg.text)
         if command is not None:
             await self.execute(command, msg.sender)
+        elif self._accepts_close(msg):
+            await self.execute(Command("clore", "clore", ""), msg.sender)
+        elif await self._propose_close_if_over(msg):
+            pass
         elif not self.paused and contains_secret(msg.text):
             await self.reply(
                 f"Attention : le message de {msg.sender} semble contenir un mot de passe ou un jeton. "
@@ -197,13 +235,14 @@ class IncidentAgent:
     async def execute(self, command: Command, author: str) -> None:
         if not await self._authorize(command, author):
             return
+        if command.verb == "clore":
+            self._background(self._close(author))
+            return
         if command.verb in TASKS:
             if self.llm is None:
                 await self.reply("L'analyse n'est pas activée pour cette session (option --llm).")
                 return
-            task = asyncio.create_task(self._analyze(command))
-            self._analyses.add(task)
-            task.add_done_callback(self._analyses.discard)
+            self._background(self._analyze(command, author))
             return
         handler = getattr(self, f"_cmd_{command.verb}", None)
         if handler is not None:
@@ -263,7 +302,7 @@ class IncidentAgent:
             return None, "Plusieurs participants correspondent : " + ", ".join(matches) + ". Précisez le nom."
         return name, " Cette personne n'a pas encore écrit dans le chat : son nom doit être exactement celui affiché par Teams."
 
-    async def _analyze(self, command: Command) -> None:
+    async def _analyze(self, command: Command, author: str) -> None:
         assert self.llm is not None
         incident = self.store.session_incident(self.session_id)
         try:
@@ -274,6 +313,8 @@ class IncidentAgent:
                 incident["ref"] if incident else None,
                 command.arg,
                 self.context,
+                requester=author,
+                agent_name=self.display_name,
             )
         except UsageError as exc:
             text = str(exc)
@@ -281,6 +322,87 @@ class IncidentAgent:
             log.error("Analyse « %s » impossible : %s", command.word, exc)
             text = f"Analyse « {command.word} » impossible pour le moment ({exc})."
         await self.reply(text or f"Analyse « {command.word} » : réponse vide.")
+
+    def _background(self, coro) -> None:
+        """Analyse LLM en tâche de fond : la lecture du chat continue pendant ce temps."""
+        task = asyncio.create_task(coro)
+        self._analyses.add(task)
+        task.add_done_callback(self._analyses.discard)
+
+    # -- clôture ----------------------------------------------------------
+
+    async def _propose_close_if_over(self, msg: ChatMessage) -> bool:
+        """Fin d'incident évoquée : propose la clôture au responsable, au plus une fois par
+        CLOSE_PROPOSAL_DELAY. True si la proposition a été faite."""
+        text = _plain(msg.text)
+        if self.paused or self.closing or not _INCIDENT_OVER.search(text) or _NEGATION.search(text):
+            return False
+        now = asyncio.get_running_loop().time()
+        if self._close_proposed_at is not None and now - self._close_proposed_at < CLOSE_PROPOSAL_DELAY:
+            return False
+        self._close_proposed_at = now
+        quote = msg.text if len(msg.text) <= 80 else msg.text[:77] + "…"
+        oral = " (à l'oral)" if msg.source == "transcript" else ""
+        if self.managers:
+            ask = f"{self._managers_label()}, voulez-vous clore l'incident ? Répondez « oui » ou tapez « imv clore »"
+        else:
+            ask = "Le responsable de l'incident peut le clore en tapant « imv clore »"
+        log.info("Fin d'incident évoquée par %s : proposition de clôture", msg.sender)
+        await self.reply(
+            f"{msg.sender}{oral} : « {quote} ». L'incident semble terminé. {ask} : je publierai le "
+            "résumé de fin, puis je quitterai la réunion.",
+            kind="proactive",
+            rule_id="incident_over",
+        )
+        return True
+
+    def _accepts_close(self, msg: ChatMessage) -> bool:
+        """« oui » d'un responsable peu après la proposition de clôture."""
+        if self._close_proposed_at is None or self.closing or _name_key(msg.sender) not in self.managers:
+            return False
+        if asyncio.get_running_loop().time() - self._close_proposed_at > CLOSE_PROPOSAL_DELAY:
+            return False
+        return _plain(msg.text).strip(" .!") in _YES
+
+    async def _close(self, author: str) -> None:
+        if self.closing:
+            await self.reply("Clôture déjà en cours.")
+            return
+        self.closing = True
+        log.info("Clôture de l'incident demandée par %s", author)
+        if self.llm is not None:
+            await self.reply(f"Clôture demandée par {author} : je rédige le résumé de fin…")
+        await self.reply(await self._final_summary(), kind="report")
+        self.store.close_incident(self.session_id)
+        await self.reply("Fin du suivi de l'incident par IMV. Je quitte la réunion, merci à tous.")
+        if self.on_close is not None:
+            self.on_close()
+
+    async def _final_summary(self) -> str:
+        incident = self.store.session_incident(self.session_id)
+        ref = incident["ref"] if incident else None
+        messages = self.store.messages(self.session_id)
+        if self.llm is not None:
+            try:
+                text = await analyze(
+                    self.llm, "rapport", messages, ref, context=self.context, agent_name=self.display_name
+                )
+                if text.strip():
+                    return text
+            except LLMError as exc:
+                log.error("Résumé de fin impossible : %s", exc)
+        # Sans LLM (ou en erreur) : faits enregistrés, sans interprétation.
+        human = [m for m in messages if m["source"] != "system" and parse_command(m["text"]) is None]
+        people = sorted({m["author_name"] for m in human})
+        lines = [f"Résumé de fin{f' — incident {ref}' if ref else ''}"]
+        if human:
+            start, end = (human[0]["sent_at"] or human[0]["captured_at"]), (human[-1]["sent_at"] or human[-1]["captured_at"])
+            lines.append(f"• Échanges enregistrés : {len(human)} message{'s' if len(human) > 1 else ''}, de {local_hour(start)} à {local_hour(end)}")
+            lines.append(f"• Participants : {', '.join(people)}")
+        else:
+            lines.append("• Aucun message enregistré.")
+        lines.append("Analyse non disponible (pas de LLM) : relisez l'historique avec « imo_agent.py history ».")
+        return "\n".join(lines)
 
     async def wait_analyses(self) -> None:
         """Attend la fin des analyses en cours (fin de session, tests)."""

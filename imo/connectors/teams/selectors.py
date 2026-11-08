@@ -136,6 +136,14 @@ CAPTIONS_ON = [
     '[role="menuitem"]:has-text("captions")',
     '[role="menuitemcheckbox"]:has-text("aptions")',
 ]
+# Sous-menu éventuel après « Captions »
+CAPTIONS_SUBMENU = [
+    '[role="menuitem"]:has-text("Turn on live captions")',
+    '[role="menuitemcheckbox"]:has-text("Live captions")',
+    '[role="menuitem"]:has-text("Show live captions")',
+    '[role="menuitem"]:has-text("Live captions")',
+    '[role="menuitem"]:has-text("Turn on")',
+]
 # Zone des sous-titres, présente une fois activés (la lecture est dans captions_reader.js)
 CAPTIONS_CONTAINER = [
     '[data-tid="closed-captions-renderer"]',

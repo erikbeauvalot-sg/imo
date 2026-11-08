@@ -130,6 +130,9 @@ class TeamsSession:
         self._browser: Browser | None = None
         self._context: BrowserContext | None = None
         self.page: Page | None = None
+        # Agent, analyses en tâche de fond et interface web peuvent écrire en même temps :
+        # un message à la fois, sinon les frappes se mélangent dans la zone de saisie.
+        self._send_lock = asyncio.Lock()
 
     # -- cycle de vie -----------------------------------------------------
 
@@ -380,8 +383,9 @@ class TeamsSession:
         return False
 
     async def _captions_from_menu(self, diagnose: bool) -> bool:
-        """More → Language and speech → Turn on live captions. Au premier essai, journalise et
-        capture le contenu de chaque menu : il varie selon la version de Teams et le tenant."""
+        """More → Captions (invité, Teams web 2026), sinon More → Language and speech → Turn on
+        live captions. Au premier essai, journalise et capture le contenu de chaque menu : il
+        varie selon la version de Teams et le tenant."""
         if not await self._click_first(sel.MORE_BUTTON):
             if diagnose:
                 log.info("Sous-titres : bouton « More » introuvable")
@@ -390,6 +394,15 @@ class TeamsSession:
         if diagnose:
             log.info("Sous-titres, menu More : %s", " | ".join(await self._menu_items()) or "(vide)")
             await self.snapshot("captions-more")
+        if await self._click_first(sel.CAPTIONS_ON):
+            await self._require_page().wait_for_timeout(800)
+            # Selon les versions, « Captions » active directement les sous-titres ou ouvre un sous-menu.
+            if not await self._present(sel.CAPTIONS_CONTAINER):
+                if diagnose:
+                    log.info("Sous-titres, après « Captions » : %s", " | ".join(await self._menu_items()) or "(aucun menu)")
+                    await self.snapshot("captions-submenu")
+                await self._click_first(sel.CAPTIONS_SUBMENU)
+            return True
         if not await self._wait_click(sel.LANGUAGE_SPEECH_MENU, 3):
             return False
         await self._require_page().wait_for_timeout(800)
@@ -444,19 +457,20 @@ class TeamsSession:
     async def send_chat(self, text: str) -> bool:
         """Poste `text` dans le chat ; False si la zone de saisie est absente (chat en lecture seule)."""
         page = self._require_page()
-        box = await self._first_visible(sel.CHAT_INPUT)
-        if box is None:
-            return False
-        try:
-            await box.click(timeout=3000)
-            for i, line in enumerate(text.split("\n")):
-                if i:
-                    await page.keyboard.press("Shift+Enter")
-                await page.keyboard.insert_text(line)
-            await page.keyboard.press("Enter")
-        except Exception as exc:  # noqa: BLE001
-            log.warning("Envoi dans le chat impossible : %s", exc)
-            return False
+        async with self._send_lock:
+            box = await self._first_visible(sel.CHAT_INPUT)
+            if box is None:
+                return False
+            try:
+                await box.click(timeout=3000)
+                for i, line in enumerate(text.split("\n")):
+                    if i:
+                        await page.keyboard.press("Shift+Enter")
+                    await page.keyboard.insert_text(line)
+                await page.keyboard.press("Enter")
+            except Exception as exc:  # noqa: BLE001
+                log.warning("Envoi dans le chat impossible : %s", exc)
+                return False
         return True
 
     async def chat_state(self) -> dict:

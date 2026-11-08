@@ -44,7 +44,7 @@ CREATE TABLE IF NOT EXISTS interventions (
     id          INTEGER PRIMARY KEY,
     session_id  INTEGER NOT NULL REFERENCES sessions(id),
     incident_id INTEGER REFERENCES incidents(id),
-    type        TEXT NOT NULL,           -- welcome | command | proactive
+    type        TEXT NOT NULL,           -- welcome | command | proactive | manual (interface web) | report
     rule_id     TEXT,
     content     TEXT NOT NULL,
     delivered   INTEGER NOT NULL,        -- 0 si le chat est en lecture seule
@@ -89,12 +89,20 @@ class Store:
 
     def list_sessions(self) -> list[sqlite3.Row]:
         return self.db.execute(
-            """SELECT s.id, s.created_at, s.status, s.error_code, s.meeting_url,
+            """SELECT s.id, s.created_at, s.joined_at, s.ended_at, s.status, s.error_code, s.meeting_url,
+                      s.display_name,
                       i.ref AS incident_ref,
                       (SELECT COUNT(*) FROM messages m WHERE m.session_id = s.id) AS message_count
                FROM sessions s LEFT JOIN incidents i ON i.id = s.incident_id
                ORDER BY s.id"""
         ).fetchall()
+
+    def session(self, session_id: int) -> sqlite3.Row | None:
+        return self.db.execute(
+            """SELECT s.*, i.ref AS incident_ref FROM sessions s
+               LEFT JOIN incidents i ON i.id = s.incident_id WHERE s.id = ?""",
+            (session_id,),
+        ).fetchone()
 
     # -- incidents --------------------------------------------------------
 
@@ -113,6 +121,15 @@ class Store:
                 (incident_id, session_id),
             )
         return incident_id
+
+    def close_incident(self, session_id: int) -> None:
+        """Marque clos l'incident suivi par la session (sans effet si aucun n'a été démarré)."""
+        with self.db:
+            self.db.execute(
+                """UPDATE incidents SET status = 'closed', closed_at = ?
+                   WHERE id = (SELECT incident_id FROM sessions WHERE id = ?)""",
+                (utc_now(), session_id),
+            )
 
     def session_incident(self, session_id: int) -> sqlite3.Row | None:
         return self.db.execute(

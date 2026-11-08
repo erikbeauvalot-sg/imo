@@ -15,7 +15,7 @@ from pathlib import Path
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import HTMLResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from imo.llm import PROVIDERS, LLMError
 from imo.runner import AGENT_NAMES, MeetingConfig, MeetingRunner, resolve_context_path
@@ -35,6 +35,10 @@ class MeetingRequest(BaseModel):
     avatar: bool = False
     welcome: bool = True
     llm: str | None = None  # None : celui du serveur (--llm) ; "" : aucune analyse
+
+
+class ChatRequest(BaseModel):
+    text: str = Field(max_length=4000)
 
 
 class Meetings:
@@ -78,13 +82,6 @@ class Meetings:
         except Exception:  # noqa: BLE001 — déjà journalisé et marqué en échec par le runner
             pass
 
-    def stop(self, session_id: int) -> MeetingRunner:
-        runner = self.runners.get(session_id)
-        if runner is None:
-            raise KeyError(session_id)
-        runner.stop()
-        return runner
-
     async def shutdown(self, timeout: float = 15) -> None:
         """Arrêt du serveur : chaque agent quitte sa réunion proprement."""
         for runner in self.runners.values():
@@ -98,23 +95,31 @@ class Meetings:
             await asyncio.gather(*pending, return_exceptions=True)
 
 
-def describe(runner: MeetingRunner, task: asyncio.Task | None) -> dict:
-    incident = runner.store.session_incident(runner.session_id)
+def describe(row, runner: MeetingRunner | None, task: asyncio.Task | None) -> dict:
+    """Session de la base, complétée par l'état de l'agent s'il tourne dans ce serveur."""
+    live = runner is not None and task is not None and not task.done()
+    status = runner.status if runner else row["status"]
+    if not live and status in ("joining", "in_meeting"):
+        status = "interrupted"  # serveur ou commande arrêtés sans clore la session
+    agent = runner.agent if live else None
     return {
-        "id": runner.session_id,
-        "name": runner.name,
-        "url": runner.session.url,
-        "status": runner.status,
-        "stopping": runner._stop.is_set() and task is not None and not task.done(),
-        "error": runner.error,
-        "incident": incident["ref"] if incident else None,
-        "llm": runner.llm.name if runner.llm else None,
-        "captions": runner.config.captions,
-        "transcribing": bool(runner.agent and runner.agent.transcribing),
-        "paused": bool(runner.agent and runner.agent.paused),
-        "managers": sorted(runner.agent.managers.values()) if runner.agent else runner.config.managers,
-        "open_to_all": bool(runner.agent and runner.agent.open_to_all),
-        "messages": runner.store.count_messages(runner.session_id),
+        "id": row["id"],
+        "name": row["display_name"],
+        "url": row["meeting_url"],
+        "status": status,
+        "live": live,
+        "stopping": live and runner._stop.is_set(),
+        "error": (runner.error if runner else None) or row["error_code"],
+        "incident": row["incident_ref"],
+        "created_at": row["created_at"],
+        "ended_at": row["ended_at"],
+        "messages": row["message_count"] if "message_count" in row.keys() else None,
+        "llm": runner.llm.name if live and runner.llm else None,
+        "captions": live and runner.config.captions,
+        "transcribing": bool(agent and agent.transcribing),
+        "paused": bool(agent and agent.paused),
+        "managers": (sorted(agent.managers.values()) if agent else runner.config.managers) if live else [],
+        "open_to_all": bool(agent and agent.open_to_all),
     }
 
 
@@ -125,7 +130,7 @@ def feed(store: Store, session_id: int, limit: int = 300) -> list[dict]:
         for m in store.messages(session_id)
     ] + [
         {"time": i["timestamp"], "author": "IMV", "text": i["content"],
-         "kind": "agent" if i["delivered"] else "agent-undelivered"}
+         "kind": ("manual" if i["type"] == "manual" else "agent") + ("" if i["delivered"] else "-undelivered")}
         for i in store.interventions(session_id)
     ]
     items.sort(key=lambda item: item["time"])
@@ -151,10 +156,24 @@ def create_app(db: Path | str, defaults: MeetingConfig, allowed_hosts: list[str]
     # Contre le « DNS rebinding » : un site web ne peut pas joindre ce serveur sous un autre nom.
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=allowed_hosts)
 
-    def runner_or_404(session_id: int) -> MeetingRunner:
-        if session_id not in meetings.runners:
+    def session_or_404(session_id: int):
+        row = meetings.store.session(session_id)
+        if row is None:
             raise HTTPException(404, f"session {session_id} inconnue")
-        return meetings.runners[session_id]
+        return row
+
+    def describe_id(session_id: int) -> dict:
+        row = session_or_404(session_id)
+        data = describe(row, meetings.runners.get(session_id), meetings.tasks.get(session_id))
+        data["messages"] = meetings.store.count_messages(session_id)
+        return data
+
+    def live_runner(session_id: int) -> MeetingRunner:
+        session_or_404(session_id)
+        runner, task = meetings.runners.get(session_id), meetings.tasks.get(session_id)
+        if runner is None or task is None or task.done():
+            raise HTTPException(409, "l'agent de cette session n'est plus en réunion")
+        return runner
 
     @app.get("/", response_class=HTMLResponse)
     async def page() -> str:
@@ -172,8 +191,10 @@ def create_app(db: Path | str, defaults: MeetingConfig, allowed_hosts: list[str]
         }
 
     @app.get("/api/meetings")
-    async def list_meetings() -> list[dict]:
-        return [describe(r, meetings.tasks.get(i)) for i, r in sorted(meetings.runners.items(), reverse=True)]
+    async def list_meetings(limit: int = 100) -> list[dict]:
+        """Sessions de la base, les plus récentes d'abord (y compris avant un redémarrage, et celles de join)."""
+        rows = meetings.store.list_sessions()[::-1][:limit]
+        return [describe(r, meetings.runners.get(r["id"]), meetings.tasks.get(r["id"])) for r in rows]
 
     @app.post("/api/meetings", status_code=201)
     async def start_meeting(req: MeetingRequest) -> dict:
@@ -183,21 +204,34 @@ def create_app(db: Path | str, defaults: MeetingConfig, allowed_hosts: list[str]
             runner = meetings.start(req)
         except (ValueError, LLMError) as exc:
             raise HTTPException(400, str(exc)) from exc
-        return describe(runner, meetings.tasks.get(runner.session_id))
+        return describe_id(runner.session_id)
 
     @app.delete("/api/meetings/{session_id}", status_code=202)
     async def stop_meeting(session_id: int) -> dict:
-        runner = runner_or_404(session_id)
-        meetings.stop(session_id)
-        return describe(runner, meetings.tasks.get(session_id))
+        live_runner(session_id).stop()
+        return describe_id(session_id)
+
+    @app.post("/api/meetings/{session_id}/chat")
+    async def send_to_chat(session_id: int, msg: ChatRequest) -> dict:
+        """Message tapé dans l'interface web, publié dans le chat de la réunion sous le nom de l'agent."""
+        text = msg.text.strip()
+        if not text:
+            raise HTTPException(400, "message vide")
+        runner = live_runner(session_id)
+        if runner.agent is None or runner.status != "in_meeting" or runner._stop.is_set():
+            raise HTTPException(409, "l'agent n'est pas encore (ou plus) dans le chat de la réunion")
+        delivered = await runner.agent.reply(text, kind="manual")
+        if not delivered:
+            raise HTTPException(409, "message non publié : le chat est peut-être fermé aux invités")
+        return {"delivered": True}
 
     @app.get("/api/meetings/{session_id}/feed")
     async def meeting_feed(session_id: int) -> dict:
-        runner = runner_or_404(session_id)
+        runner = meetings.runners.get(session_id)
         return {
-            "meeting": describe(runner, meetings.tasks.get(session_id)),
+            "meeting": describe_id(session_id),
             "feed": feed(meetings.store, session_id),
-            "events": list(runner.events),
+            "events": list(runner.events) if runner else [],
         }
 
     return app

@@ -107,6 +107,13 @@ TASKS = {
         "complète avec ton expertise, présentée comme telle (« Piste : … »). Si ni le chat ni ton "
         "expertise ne permettent de répondre, dis-le.\nQuestion : {arg}"
     ),
+    "rapport": (
+        "L'incident est terminé. Rédige le résumé de fin de call, 25 lignes maximum, avec ces rubriques : "
+        "Incident (référence, heure de début et de fin, durée) ; Résumé (2 à 3 lignes) ; Chronologie "
+        "(5 à 8 lignes « HH:MM — événement ») ; Cause (identifiée, ou supposée en le précisant) ; "
+        "Résolution (ce qui a rétabli le service) ; Actions restantes (« • action — owner — échéance ») ; "
+        "Points pour le post-mortem. Écris « non renseigné » pour une rubrique sans information."
+    ),
     "com": (
         "Rédige un brouillon de communication d'incident pour l'audience « {audience} », prêt à être "
         "copié par l'IM. {guidance} Structure : Objet (une ligne), Situation, Impact, Actions en cours, "
@@ -147,7 +154,7 @@ def resolve_audience(arg: str) -> str | None:
 
 def messages_since(messages: Iterable[Mapping], hour: str) -> list[Mapping]:
     """Messages postés à partir de « HH:MM » (heure locale, même journée)."""
-    return [m for m in messages if _local_hour(m["sent_at"] or m["captured_at"]) >= hour]
+    return [m for m in messages if local_hour(m["sent_at"] or m["captured_at"]) >= hour]
 
 
 _HOUR = re.compile(r"^([01]?\d|2[0-3])[:h]([0-5]\d)$")
@@ -192,7 +199,7 @@ def format_transcript(messages: Iterable[Mapping]) -> str:
         if re.match(r"(?i)^imv\b", text):
             continue
         oral = " (oral)" if _source(m) == "transcript" else ""
-        lines.append(f"[{_local_hour(m['sent_at'] or m['captured_at'])}] {m['author_name']}{oral} : {mask_secrets(text)}")
+        lines.append(f"[{local_hour(m['sent_at'] or m['captured_at'])}] {m['author_name']}{oral} : {mask_secrets(text)}")
     return "\n".join(lines)
 
 
@@ -204,7 +211,7 @@ def _source(m: Mapping) -> str:
         return "chat"
 
 
-def _local_hour(timestamp: str) -> str:
+def local_hour(timestamp: str) -> str:
     # Horodatages stockés en UTC ; l'heure affichée aux participants est l'heure locale.
     try:
         return datetime.fromisoformat(timestamp.replace("Z", "+00:00")).astimezone().strftime("%H:%M")
@@ -237,8 +244,15 @@ async def analyze(
     incident_ref: str | None = None,
     arg: str = "",
     context: str | None = None,
+    requester: str | None = None,
+    agent_name: str | None = None,
 ) -> str:
     instruction = build_instruction(task, arg)
+    if requester:
+        instruction += f" Demande faite par {requester} : adresse-lui directement ta réponse."
+    if agent_name:
+        # Sinon « <agent> has joined the chat » fait passer l'agent pour un nouvel arrivant.
+        instruction += f" « {agent_name} » est l'agent IMV lui-même, pas un participant."
     messages = list(messages)
     if task == "catchup" and (since := parse_hour(arg)):
         messages = messages_since(messages, since)

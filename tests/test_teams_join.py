@@ -354,6 +354,21 @@ def test_captions_become_transcript_messages():
     assert state["matchedContainer"] == '[data-tid="closed-captions-renderer"]'
 
 
+@pytest.mark.parametrize("menu", ["", "&captionsmenu=speech"])
+def test_captions_menu_variants(menu):
+    """More → Captions (vrai Teams, invité) ou More → Language and speech → Turn on live captions."""
+
+    async def scenario():
+        session = await _session("?lobby=100" + menu)
+        try:
+            await session.join(admission_timeout=10)
+            return await session.enable_captions(timeout=5)
+        finally:
+            await session.close()
+
+    assert asyncio.run(scenario()) is True
+
+
 def test_captions_unavailable(caplog):
     caplog.set_level(logging.INFO, logger="imo")
 
@@ -367,6 +382,6 @@ def test_captions_unavailable(caplog):
 
     assert asyncio.run(scenario()) is False
     # Diagnostic : contenu du menu More journalisé pour ajuster les sélecteurs
-    assert "Sous-titres, menu More : Settings" in caplog.text
+    assert "Sous-titres, menu More : Meeting info | Settings" in caplog.text
     # Diagnostic : contenu du menu More journalisé pour ajuster les sélecteurs
-    assert "Sous-titres, menu More : Settings" in caplog.text
+    assert "Sous-titres, menu More : Meeting info | Settings" in caplog.text

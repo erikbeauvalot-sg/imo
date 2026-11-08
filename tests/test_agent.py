@@ -87,6 +87,9 @@ def test_analysis_command_runs_in_background():
     assert chat.sent == ["Symptômes : erreurs 500"]
     assert "Alice : Erreurs 500 sur le paiement" in llm.prompts[0]
     assert store.count_messages(sid) == 3
+    # Le LLM sait à qui répondre, et que l'agent n'est pas un participant qui arrive
+    assert "Demande faite par Bob" in llm.prompts[0]
+    assert "« IMV - Assistant IM » est l'agent IMV lui-même" in llm.prompts[0]
 
 
 def test_pistes_uses_context():
@@ -166,7 +169,6 @@ def test_commands_and_recording():
         await agent.handle(_msg("Bob", "imv démarrer INC0012345", "m2"))
         await agent.handle(_msg("Bob", "imv statut", "m3"))
         await agent.handle(_msg("Bob", "imv aide", "m4"))
-        await agent.handle(_msg("Bob", "imv clore", "m5"))
         await agent.handle(_msg("Bob", "imv xyz", "m6"))
         return chat, store, sid
 
@@ -174,14 +176,13 @@ def test_commands_and_recording():
     assert chat.sent[0].startswith("Suivi de l'incident INC0012345 démarré, IM : Bob")
     assert "messages enregistrés : 3" in chat.sent[1]
     assert chat.sent[2] == HELP
-    assert "pas encore disponible" in chat.sent[3]
-    assert "Commande inconnue" in chat.sent[4] and "Vouliez-vous" not in chat.sent[4]
+    assert "Commande inconnue" in chat.sent[3] and "Vouliez-vous" not in chat.sent[3]
 
     incident = store.session_incident(sid)
     assert incident["ref"] == "INC0012345" and incident["im_name"] == "Bob"
     # Les messages antérieurs à « démarrer » sont rattachés à l'incident
     assert {m["incident_id"] for m in store.messages(sid)} == {incident["id"]}
-    assert len(store.interventions(sid)) == 5
+    assert len(store.interventions(sid)) == 4
 
 
 @pytest.mark.parametrize(
@@ -378,3 +379,79 @@ def test_spoken_words_are_recorded_but_never_run_as_commands():
     # « imv pause » prononcé : enregistré, pas exécuté ; tapé dans le chat : exécuté
     assert [(m["source"], m["text"]) for m in store.messages(sid)] == [("transcript", "imv pause"), ("chat", "imv pause")]
     assert agent.paused is True and len(sent) == 2
+
+
+def _closing_agent(llm=None):
+    agent, chat, store, sid = _agent(llm=llm)
+    closed = []
+    agent.on_close = lambda: closed.append(True)
+    return agent, chat, store, sid, closed
+
+
+def test_incident_over_proposes_closing_then_oui_closes():
+    async def scenario():
+        llm = FakeLLM()
+        agent, chat, store, sid, closed = _closing_agent(llm)
+        await agent.handle(_msg("Bob", "imv démarrer INC42", "m1"))
+        await agent.handle(_msg("Alice", "Le site web ne marche plus", "m2"))
+        await agent.handle(_msg("Alice", "C'est résolu, le service est rétabli", "m3"))
+        await agent.handle(_msg("Alice", "ça remarche", "m4"))  # pas de seconde proposition
+        await agent.handle(_msg("Alice", "oui", "m5"))  # pas responsable : simple message
+        assert not agent.closing
+        await agent.handle(_msg("Bob", "Oui !", "m6"))
+        await agent.wait_analyses()
+        return chat.sent[1:], llm, store, sid, closed
+
+    sent, llm, store, sid, closed = asyncio.run(scenario())
+    assert sent[0].startswith("Alice : « C'est résolu, le service est rétabli ». L'incident semble terminé.")
+    assert "Bob, voulez-vous clore l'incident ?" in sent[0]
+    assert sent[1:] == [
+        "Clôture demandée par Bob : je rédige le résumé de fin…",
+        "Symptômes : erreurs 500",
+        "Fin du suivi de l'incident par IMV. Je quitte la réunion, merci à tous.",
+    ]
+    assert "L'incident est terminé. Rédige le résumé de fin" in llm.prompts[-1]
+    assert closed == [True]
+    assert store.session_incident(sid)["status"] == "closed"
+    assert [i["type"] for i in store.interventions(sid)][-2] == "report"
+
+
+def test_incident_over_ignores_negations_pause_and_old_proposals():
+    async def scenario():
+        agent, chat, _, _, closed = _closing_agent()
+        await agent.handle(_msg("Alice", "L'incident n'est pas encore résolu", "m1"))
+        await agent.handle(_msg("Bob", "imv pause", "m2"))
+        await agent.handle(_msg("Alice", "incident résolu", "m3"))
+        await agent.handle(_msg("Bob", "imv reprise", "m4"))
+        await agent.handle(_msg("Bob", "oui", "m5"))  # aucune proposition en cours
+        return chat.sent, closed
+
+    sent, closed = asyncio.run(scenario())
+    assert not any("semble terminé" in t for t in sent) and closed == []
+
+
+def test_incident_over_said_aloud():
+    async def scenario():
+        agent, chat, _, _, _ = _closing_agent()
+        await agent.handle(_msg("Alice", "bon, l'incident est clos", source="transcript"))
+        return chat.sent
+
+    assert asyncio.run(scenario())[0].startswith("Alice (à l'oral) : « bon, l'incident est clos ».")
+
+
+def test_close_without_llm_and_reserved_to_managers():
+    async def scenario():
+        agent, chat, _, _, closed = _closing_agent()
+        await agent.handle(_msg("Alice", "Erreurs 500", "m1"))
+        await agent.handle(_msg("Alice", "imv clore", "m2"))  # Bob est responsable
+        assert closed == []
+        await agent.handle(_msg("Bob", "imv clore", "m3"))
+        await agent.wait_analyses()
+        return chat.sent, closed
+
+    sent, closed = asyncio.run(scenario())
+    assert "réservé aux responsables" in sent[0]
+    # Les commandes « imv » ne comptent pas comme des échanges
+    assert sent[1].startswith("Résumé de fin\n• Échanges enregistrés : 1 message,")
+    assert "Participants : Alice\n" in sent[1]
+    assert sent[2].startswith("Fin du suivi") and closed == [True]
