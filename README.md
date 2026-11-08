@@ -238,6 +238,8 @@ Un groupe Telegram peut tenir lieu de chat de réunion : Oscar y suit la convers
 
 Les commandes Telegram (`/resume`, `/pistes`, `/aide`, `/clore`…) valent `imv resume`, `imv pistes`… ; une mention du bot en tête de message vaut l'appel par le nom. « Quitter la réunion » arrête le suivi (le bot reste dans le groupe) ; retirer le bot du groupe termine la session. `join telegram:<id>` fonctionne aussi en ligne de commande. Un seul serveur à la fois peut utiliser un même bot.
 
+Sur Telegram, chaque participant apparaît avec son identifiant numérique, par exemple « Bob Durand (#11) » : le nom affiché se choisit librement, l'identifiant non. Un homonyme ne peut donc pas se faire passer pour le responsable. Pour désigner un responsable depuis la page, indiquez ce nom complet, identifiant compris ; sinon, le responsable est la personne qui a tapé `/oscar`, ou la première qui s'adresse à Oscar.
+
 ### Historique
 
 ```bash

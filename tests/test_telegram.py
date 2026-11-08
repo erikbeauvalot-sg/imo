@@ -130,7 +130,7 @@ def test_runner_follows_a_telegram_group(telegram):
         from imo.connectors.telegram import get_bot
 
         store = Store(":memory:")
-        runner = MeetingRunner(MeetingConfig(url="telegram:-100123", name="IMV - Oscar", managers=["Bob Durand"],
+        runner = MeetingRunner(MeetingConfig(url="telegram:-100123", name="IMV - Oscar", managers=["Bob Durand (#11)"],
                                              debug_dir=None), store)
         task = asyncio.create_task(runner.run())
         await _until(lambda: runner.status == "in_meeting" and telegram.sent)
@@ -146,7 +146,10 @@ def test_runner_follows_a_telegram_group(telegram):
         await _until(lambda: len(telegram.sent) >= 3)
         telegram.push_message(BOB, "/start@autre_bot")  # commande d'un autre bot : ignorée
         telegram.push_message(BOB, "Le site de paiement renvoie des erreurs 500")
-        await _until(lambda: store.count_messages(runner.session_id) >= 4)
+        # Même nom affiché que le responsable, autre compte : commande réservée refusée
+        telegram.push_message({"id": 66, "first_name": "Bob", "last_name": "Durand"}, "imv autoriser tous")
+        await _until(lambda: len(telegram.sent) >= 4)
+        assert not runner.agent.open_to_all
 
         telegram.push_removed()  # bot retiré du groupe : fin de session
         assert await asyncio.wait_for(task, 10) == 0
@@ -156,12 +159,13 @@ def test_runner_follows_a_telegram_group(telegram):
 
     runner, store = asyncio.run(scenario())
     texts = telegram.texts()
-    assert len(texts) == 3, texts  # accueil, statut, aide : rien pour le message d'avant l'arrivée
+    assert len(texts) == 4, texts  # accueil, statut, aide, refus : rien pour le message d'avant l'arrivée
     assert "enregistrement : actif" in texts[1]  # réponse à « Oscar, statut »
     assert "imv hermes" in texts[2]  # aide complète
+    assert "Bob Durand (#66)" in texts[3] and "réservé aux responsables" in texts[3]
     messages = [(m["author_name"], m["text"]) for m in store.messages(runner.session_id)]
-    assert messages[0] == ("Bob Durand", "imv statut")
-    assert ("Bob Durand", "imv aide") in messages
+    assert messages[0] == ("Bob Durand (#11)", "imv statut")
+    assert ("Bob Durand (#11)", "imv aide") in messages
     assert not any("autre_bot" in t for _, t in messages)
     assert runner.status == "ended" and runner.session.url == "telegram:-100123"
 
@@ -196,10 +200,10 @@ def test_oscar_command_starts_a_session_for_allowed_users(telegram, monkeypatch,
                 break
             assert time.monotonic() < deadline, (meetings, telegram.texts())
             time.sleep(0.1)
-        assert [(m["url"], m["managers"]) for m in meetings] == [("telegram:-100123", ["Bob Durand"])]
+        assert [(m["url"], m["managers"]) for m in meetings] == [("telegram:-100123", ["Bob Durand (#11)"])]
         assert meetings[0]["created_by"] == "telegram:@bobd"
         texts = telegram.texts()
-        assert any("Mallory, vous n'êtes pas autorisé" in t and "7" in t for t in texts)
+        assert any("Mallory (#7), vous n'êtes pas autorisé" in t for t in texts)
         options = client.get("/api/options").json()["telegram"]
         assert options["bot"] == "@oscar_test_bot"
         assert {c["title"] for c in options["chats"]} == {"Incident paiement", "Autre groupe"}

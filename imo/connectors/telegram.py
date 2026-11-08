@@ -95,8 +95,12 @@ class TelegramAPI:
 
 
 def sender_name(user: dict) -> str:
+    """Nom de l'auteur, suivi de son identifiant Telegram : « Bob Durand (#11) ». Le nom affiché se
+    choisit librement ; l'identifiant, ajouté à la fin par le connecteur, empêche de se faire passer
+    pour le responsable de la session en prenant son nom (comme « (Guest) » sur Teams)."""
     name = " ".join(p for p in (user.get("first_name"), user.get("last_name")) if p).strip()
-    return name or (f"@{user['username']}" if user.get("username") else str(user.get("id", "?")))
+    name = name or (f"@{user['username']}" if user.get("username") else "")
+    return f"{name} (#{user.get('id', '?')})".strip()
 
 
 def is_allowed(user: dict, allowed: set[str]) -> bool:

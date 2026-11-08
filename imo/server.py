@@ -279,7 +279,7 @@ def create_app(
                             user.get("id"), title)
                 await bot.api.call("sendMessage", chat_id=chat_id, text=(
                     f"{sender_name(user)}, vous n'êtes pas autorisé à lancer Oscar "
-                    f"(identifiant Telegram : {user.get('id')}, à ajouter à TELEGRAM_ALLOWED_USERS)."))
+                    f"(identifiant {user.get('id')} à ajouter à TELEGRAM_ALLOWED_USERS)."))
                 return
             group = os.environ.get("IMV_TELEGRAM_GROUP", "").strip()
             row = meetings.store.group_by_name(group) if group else None
