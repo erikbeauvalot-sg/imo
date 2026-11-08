@@ -37,3 +37,19 @@ def test_browser_hidden_by_default():
     args = build_parser().parse_args(["join", "https://teams.microsoft.com/meet/1"])
     assert not args.show
     assert build_parser().parse_args(["join", "https://teams.microsoft.com/meet/1", "--show"]).show
+
+
+def test_llm_from_environment(monkeypatch, capsys):
+    import pytest
+
+    from imo.cli import main
+
+    monkeypatch.setenv("IMV_LLM", "azure-openai")
+    assert build_parser().parse_args(["serve"]).llm == "azure-openai"
+    assert build_parser().parse_args(["serve", "--llm", "ollama"]).llm == "ollama"
+    monkeypatch.setenv("IMV_LLM", "")
+    assert build_parser().parse_args(["serve"]).llm is None
+    monkeypatch.setenv("IMV_LLM", "gpt")
+    with pytest.raises(SystemExit):
+        main(["serve"])
+    assert "fournisseur inconnu" in capsys.readouterr().err

@@ -36,8 +36,7 @@ services:
       - --auth
       - --host=0.0.0.0
       - --allowed-host=${IMV_DOMAIN:?IMV_DOMAIN manquant dans deploy/.env}
-      - --llm=${IMV_LLM:?IMV_LLM manquant dans deploy/.env}
-    env_file: .env
+    env_file: .env  # IMV_LLM : fournisseur LLM proposé par défaut (vide : pas d'analyse)
     environment:
       TZ: ${TZ:-Europe/Paris}  # heures affichées dans les résumés
       # En-têtes X-Forwarded-* de Traefik acceptés (schéma https : cookie Secure). Sans risque :

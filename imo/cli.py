@@ -185,7 +185,9 @@ def _add_llm_arguments(parser: argparse.ArgumentParser, *, required: bool, conte
         "--llm",
         choices=PROVIDERS,
         required=required,
-        help="Fournisseur LLM pour les analyses (sans cette option : pas d'analyse)",
+        # argparse ne vérifie pas un défaut : contrôlé dans main()
+        default=None if required else (os.environ.get("IMV_LLM") or None),
+        help="Fournisseur LLM pour les analyses (défaut : $IMV_LLM ; sans LLM : pas d'analyse)",
     )
     parser.add_argument(
         "--llm-model",
@@ -436,7 +438,10 @@ def run_history(args: argparse.Namespace) -> int:
 def main(argv: list[str] | None = None) -> int:
     # Variables d'un fichier .env du répertoire courant ; celles déjà définies sont prioritaires.
     load_dotenv(find_dotenv(usecwd=True))
-    args = build_parser().parse_args(argv)
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    if getattr(args, "llm", None) not in (None, *PROVIDERS):
+        parser.error(f"IMV_LLM={args.llm} : fournisseur inconnu (choix : {', '.join(PROVIDERS)})")
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.INFO,
         format="%(asctime)s %(levelname)s %(message)s",
