@@ -13,10 +13,18 @@ COPY imo_agent.py ./
 RUN python3 -m pip install --no-cache-dir --break-system-packages "playwright==1.64.1" . \
     && install -d -o pwuser -g pwuser /data
 
+# Claude Code (fournisseur LLM claude-cli) : binaire natif, version figée, sans mise à jour
+# automatique ; connexion par CLAUDE_CODE_OAUTH_TOKEN (claude setup-token), voir deploy/README.md.
+ARG CLAUDE_CODE_VERSION=2.1.311
+ENV PATH=/home/pwuser/.local/bin:$PATH \
+    DISABLE_AUTOUPDATER=1
+USER pwuser
+RUN curl -fsSL https://claude.ai/install.sh | bash -s "$CLAUDE_CODE_VERSION" \
+    && claude --version
+
 # Tout ce qui est propre à l'instance est dans /data (volume) : base sessions/imv.db, captures debug/,
 # contexte.md, et .env éventuel, lus depuis le répertoire courant comme en local.
 WORKDIR /data
-USER pwuser
 EXPOSE 8765
 ENTRYPOINT ["python", "/app/imo_agent.py"]
 CMD ["serve", "--auth", "--host", "0.0.0.0"]

@@ -112,7 +112,7 @@ Les commandes d'analyse demandent l'option `--llm` (voir ci-dessous). Si le chat
 
 | `--llm` | Usage | Configuration | Modèle par défaut |
 | --- | --- | --- | --- |
-| `claude-cli` | Mac perso, prototype | Claude Code installé et connecté (`claude`) ; consomme l'abonnement | `opus` |
+| `claude-cli` | Mac perso, prototype ; serveur Docker (`deploy/README.md`) | Claude Code installé et connecté (`claude`), ou jeton `CLAUDE_CODE_OAUTH_TOKEN` ; consomme l'abonnement | `opus` |
 | `foundry` | Réseau de la société : Claude sur Microsoft Foundry | `AZURE_FOUNDRY_ENDPOINT` + Entra ID (`AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET`) ou `ANTHROPIC_FOUNDRY_API_KEY` | `ANTHROPIC_FOUNDRY_MODEL`, sinon `claude-opus-5-5` |
 | `azure-openai` | Réseau de la société : GPT sur Microsoft Foundry | `AZURE_FOUNDRY_ENDPOINT` (ou `AZURE_OPENAI_ENDPOINT`) + Entra ID ou `AZURE_OPENAI_API_KEY` | `OPENAI_MODEL` |
 | `anthropic` | API Anthropic directe | `ANTHROPIC_API_KEY` | `claude-opus-5-5` |

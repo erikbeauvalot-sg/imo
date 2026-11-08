@@ -44,13 +44,22 @@ Puis ouvrir `https://<IMV_DOMAIN>`. Le certificat est obtenu au premier accès (
 - Les identifiants du LLM sont dans `deploy/.env` (droits `600` conseillés : `chmod 600 .env`).
 - Le serveur limite les essais de connexion, n'accepte que le nom de domaine déclaré et refuse les requêtes envoyées par d'autres sites ; le cookie de connexion est `Secure` (HTTPS) et `HttpOnly`.
 
+## LLM : Claude avec votre abonnement (`claude-cli`)
+
+L'image contient Claude Code (version figée dans le `Dockerfile`, sans mise à jour automatique). Comme sur un poste, `--llm claude-cli` passe par votre abonnement Claude ; dans le conteneur, la connexion se fait par un jeton longue durée :
+
+1. Sur un poste où vous êtes connecté à Claude Code, dans un terminal : `claude setup-token` (ouvre le navigateur, puis affiche un jeton `sk-ant-oat…`, valable un an). Copiez-le ; ne le collez ni dans un chat, ni dans un dépôt.
+2. Dans `deploy/.env` : `IMV_LLM=claude-cli` et `CLAUDE_CODE_OAUTH_TOKEN=<jeton>`, puis `docker compose up -d imv`.
+3. Vérification : `docker compose exec imv python3 /app/imo_agent.py check-llm --llm claude-cli`.
+
+Les analyses sont décomptées de votre abonnement, avec les mêmes limites d'usage que votre Claude Code ; le contenu des réunions part vers votre compte Claude personnel (voir la réserve RSSI du README principal). Pour un usage partagé ou en production, préférez une clé d'API (`IMV_LLM=anthropic` et `ANTHROPIC_API_KEY`), facturée à l'usage. Un jeton expiré ou révoqué donne « Not logged in » dans le journal de l'agent : recommencez l'étape 1.
+
 ## Autres services de l'hôte
 
 Traefik peut publier en HTTPS un service qui tourne sur le VPS hors Docker, en écoute sur `127.0.0.1` (par exemple un tableau de bord d'administration) : copier `traefik/hote.yml.example` en `traefik/<nom>.yml`, adapter le nom de domaine (enregistrement DNS vers le VPS), le port et les adresses IP autorisées. Ces fichiers ne sont pas versionnés et Traefik les prend en compte sans redémarrage. Le service garde sa propre authentification ; le filtre IP (`ipAllowList`) la complète.
 
 ## Limites
 
-- `claude-cli` n'est pas disponible dans le conteneur : choisissez `azure-openai`, `foundry`, `anthropic` ou `ollama`.
 - Teams voit l'agent arriver depuis l'adresse IP du VPS (hébergeur) : l'accueil en salle d'attente reste nécessaire.
 - La version de Playwright du `Dockerfile` (image et paquet Python) doit rester identique des deux côtés.
 
