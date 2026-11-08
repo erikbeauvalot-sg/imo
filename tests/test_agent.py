@@ -123,10 +123,103 @@ def test_ask_com_and_usage_errors():
 
     sent, prompts = asyncio.run(scenario())
     assert len(prompts) == 2
-    assert "Question : quelle est la cause ?" in prompts[0]
+    assert "Demande : quelle est la cause ?" in prompts[0]  # responsable : conversation libre
     assert "audience « utilisateurs »" in prompts[1]
     assert any("Posez votre question" in s for s in sent)
     assert any("Audience inconnue" in s for s in sent)
+
+
+def test_manager_free_chat_with_context_and_history():
+    async def scenario():
+        llm = FakeLLM()
+        store = Store(":memory:")
+        sid = store.create_session("https://teams.microsoft.com/meet/1", "IMV - Assistant IM")
+        chat = FakeChat(True)
+        agent = IncidentAgent(store, sid, "IMV - Assistant IM", chat.send, llm=llm, context="DBA : dba-oncall", managers=["Bob"])
+        await agent.handle(_msg("Alice", "too many connections sur PostgreSQL", "m1"))
+        await agent.handle(_msg("Bob", "imv explique-moi le pool de connexions", "m2"))
+        await agent.wait_analyses()
+        await agent.handle(_msg("Bob", "imv et en anglais ?", "m3"))
+        await agent.wait_analyses()
+        agent.allowed["alice"] = "Alice"
+        await agent.handle(_msg("Alice", "imv ? quelle est la cause ?", "m4"))  # autorisée : question sur l'incident
+        await agent.handle(_msg("Alice", "imv explique-moi le DNS", "m5"))  # pas responsable : commande inconnue
+        await agent.wait_analyses()
+        return chat.sent, llm
+
+    sent, llm = asyncio.run(scenario())
+    assert "Demande : explique-moi le pool de connexions" in llm.prompts[0] and "dba-oncall" in llm.systems[0]
+    assert "<echanges>" not in llm.prompts[0]
+    # Question de suivi : l'échange précédent est rappelé
+    assert "Bob : explique-moi le pool de connexions\nIMV : Symptômes : erreurs 500" in llm.prompts[1]
+    assert "Demande : et en anglais ?" in llm.prompts[1]
+    assert "Question : quelle est la cause ?" in llm.prompts[2] and len(llm.prompts) == 3
+    assert any(s.startswith("Commande inconnue : « explique-moi »") for s in sent)
+
+
+def test_manager_free_chat_said_aloud():
+    async def scenario():
+        llm = FakeLLM()
+        agent, chat, _, _ = _agent(llm=llm)
+        await agent.handle(_msg("Bob", "IMV, peux-tu me rappeler la procédure d'escalade ?", source="transcript"))
+        await agent.wait_analyses()
+        return chat.sent, llm.prompts
+
+    sent, prompts = asyncio.run(scenario())
+    assert sent[0] == "Bob (à l'oral) : « IMV, peux-tu me rappeler la procédure d'escalade ? » → imv ?"
+    assert "Demande : IMV, peux-tu me rappeler la procédure d'escalade ?" in prompts[0]
+    assert "(aucun message pour l'instant)" in prompts[0]  # pas besoin d'historique du chat
+
+
+def test_agent_called_by_name_in_chat():
+    async def scenario():
+        llm = FakeLLM()
+        store = Store(":memory:")
+        sid = store.create_session("https://teams.microsoft.com/meet/1", "IMV - Oscar")
+        chat = FakeChat(True)
+        agent = IncidentAgent(store, sid, "IMV - Oscar", chat.send, llm=llm, managers=["Bob"])
+        await agent.handle(_msg("Alice", "Oscar a relancé le serveur", "m1"))  # une personne, pas l'agent
+        assert chat.sent == []
+        await agent.handle(_msg("Bob", "oscar, statut", "m2"))
+        await agent.handle(_msg("Bob", "@IMV - Oscar explique-moi le DNS", "m3"))
+        await agent.handle(_msg("Bob", "Oscar : résumé", "m4"))
+        await agent.wait_analyses()
+        return chat.sent, llm.prompts
+
+    sent, prompts = asyncio.run(scenario())
+    assert sent[0].startswith("Incident : non démarré")
+    assert "Demande : explique-moi le DNS" in prompts[0]
+    assert "Symptômes, Impact" in prompts[1] and len(prompts) == 2
+
+
+def test_english_meeting():
+    async def scenario():
+        llm = FakeLLM()
+        store = Store(":memory:")
+        sid = store.create_session("https://teams.microsoft.com/meet/1", "IMV - Oscar")
+        chat = FakeChat(True)
+        agent = IncidentAgent(store, sid, "IMV - Oscar", chat.send, llm=llm, managers=["Bob"], language="en")
+        agent.transcribing = True
+        await agent.welcome()
+        await agent.handle(_msg("Alice", "500 errors on checkout", "m1"))
+        await agent.handle(_msg("Bob", "imv status", "m2"))
+        await agent.handle(_msg("Bob", "imv sumary", "m3"))
+        await agent.handle(_msg("Bob", "Oscar, summary", "m4"))
+        await agent.handle(_msg("Bob", "Oscar, give me the leads", source="transcript"))
+        await agent.handle(_msg("Alice", "imv status", "m5"))
+        await agent.wait_analyses()
+        return chat.sent, llm
+
+    sent, llm = asyncio.run(scenario())
+    assert sent[0].startswith("Hello, I'm Oscar") and "“Oscar, a summary please”" in sent[0]
+    assert "Commands reserved to Bob" in sent[0]
+    assert sent[1].startswith("Incident: not started (imv start [ID])")
+    assert sent[2] == "Unknown command: “sumary”. Did you mean “imv summary”? Type “imv help” for the list."
+    assert "Bob (spoken): “Oscar, give me the leads” → imv leads" in sent
+    assert "Alice, “imv status” is reserved to allowed people. Bob can add you: imv allow Alice" in sent
+    # Le LLM répond en anglais
+    assert "Symptômes, Impact" in llm.prompts[0] and "Réponds en anglais (English)" in llm.systems[0]
+    assert len(llm.prompts) == 2
 
 
 def test_secret_posted_alert():
@@ -175,7 +268,7 @@ def test_commands_and_recording():
     chat, store, sid = asyncio.run(scenario())
     assert chat.sent[0].startswith("Suivi de l'incident INC0012345 démarré, IM : Bob")
     assert "messages enregistrés : 3" in chat.sent[1]
-    assert chat.sent[2] == HELP
+    assert chat.sent[2] == HELP.format(name="Assistant IM")
     assert "Commande inconnue" in chat.sent[3] and "Vouliez-vous" not in chat.sent[3]
 
     incident = store.session_incident(sid)
@@ -285,8 +378,9 @@ def test_welcome_names_the_managers():
         return chat.sent[0], bare_chat.sent[0]
 
     with_im, without_im = asyncio.run(scenario())
-    assert with_im.startswith(WELCOME) and "réservées à Erik Beauvalot" in with_im
-    assert without_im == WELCOME
+    welcome = WELCOME["fr"].format(name="Assistant IM")
+    assert with_im.startswith(welcome) and "réservées à Erik Beauvalot" in with_im
+    assert without_im == welcome and "« Assistant IM, un résumé »" in welcome
 
 
 def test_only_authorized_people_run_commands():
@@ -307,7 +401,7 @@ def test_only_authorized_people_run_commands():
     agent, sent = asyncio.run(scenario())
     assert sent[0].startswith("Sophie Lambert, « imv pause » est réservé aux personnes autorisées")
     assert "imv autoriser Sophie Lambert" in sent[0]
-    assert sent[1] == HELP
+    assert sent[1] == HELP.format(name="Assistant IM")
     assert sent[2] == "Sophie Lambert peut maintenant utiliser les commandes IMV."
     assert sent[3].startswith("Enregistrement du chat en pause")
     assert "réservé aux responsables d'IMV" in sent[4]
@@ -379,7 +473,7 @@ def test_spoken_words_run_only_when_the_agent_is_called():
 
     agent, sent, store, sid = asyncio.run(scenario())
     assert "Je transcris aussi ce qui est dit à l'oral" in sent[0]
-    assert "« IMV, un résumé s'il te plaît » ou « Assistant IM, … »" in sent[0]
+    assert "« Assistant IM, un résumé s'il te plaît »" in sent[0]
     assert sent[1] == "Bob (à l'oral) : « IMV, pause s'il te plaît. » → imv pause"
     assert agent.paused is True
     # La demande de pause est enregistrée, pas ce qui est dit ensuite ; la reprise se tape dans le chat

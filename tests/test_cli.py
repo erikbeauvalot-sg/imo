@@ -6,14 +6,12 @@ from pathlib import Path
 
 from imo.cli import build_parser
 from imo.connectors.teams.join import validate_display_name
-from imo.runner import AGENT_NAMES, random_agent_name, resolve_context_path
+from imo.runner import DEFAULT_AGENT_NAME, resolve_context_path
 
 
-def test_random_agent_name_is_a_valid_display_name():
-    for _ in range(20):
-        name = random_agent_name()
-        assert name.startswith("IMV - ") and name[6:] in AGENT_NAMES
-        assert validate_display_name(name) == name
+def test_default_agent_name_is_a_valid_display_name():
+    assert DEFAULT_AGENT_NAME == "IMV - Oscar"
+    assert validate_display_name(DEFAULT_AGENT_NAME) == DEFAULT_AGENT_NAME
 
 
 def test_context_file_is_loaded_by_default(tmp_path, monkeypatch):

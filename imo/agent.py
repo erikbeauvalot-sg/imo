@@ -19,11 +19,47 @@ from imo.storage import Store
 
 log = logging.getLogger(__name__)
 
-WELCOME = (
-    "Bonjour, je suis IMV, l'assistant virtuel de l'Incident Manager. "
-    "J'enregistre les messages de ce chat sur un serveur interne pour aider au suivi "
-    "de l'incident (résumés, questions à poser, rapport).\n"
-    "« imv pause » suspend l'enregistrement, « imv aide » liste les commandes."
+# Textes postés dans le chat, dans la langue des sous-titres de la réunion (« fr » ou « en »).
+WELCOME = {
+    "fr": (
+        "Bonjour, je suis {name}, l'assistant virtuel de l'Incident Manager (IMV). "
+        "J'enregistre les messages de ce chat sur un serveur interne pour aider au suivi "
+        "de l'incident (résumés, questions à poser, rapport).\n"
+        "Interpellez-moi par mon nom (« {name}, un résumé ») ou avec « imv » (« imv résumé »). "
+        "« imv pause » suspend l'enregistrement, « imv aide » liste les commandes."
+    ),
+    "en": (
+        "Hello, I'm {name}, the Incident Manager's virtual assistant (IMV). "
+        "I record the messages of this chat on an internal server to help follow up "
+        "on the incident (summaries, questions to ask, report).\n"
+        "Call me by my name (“{name}, a summary”) or with “imv” (“imv summary”). "
+        "“imv pause” stops recording, “imv help” lists the commands."
+    ),
+}
+
+HELP_EN = (
+    "IMV commands, to type in the chat:\n"
+    "imv start [incident ID]: start following the incident\n"
+    "imv summary: situation update\n"
+    "imv catchup [HH:MM]: short summary for a newcomer, since a given time\n"
+    "imv questions: questions to ask now\n"
+    "imv leads: hypotheses, checks and workarounds\n"
+    "imv timeline: timeline of events\n"
+    "imv actions: identified actions and owners\n"
+    "imv com [management|users|tech]: communication draft\n"
+    "imv report: preview of the final summary\n"
+    "imv close: close the incident, post the final summary and leave the meeting (manager)\n"
+    "imv ? <question>: free question about the incident\n"
+    "imv status: agent status\n"
+    "imv pause / imv continue: stop / resume recording the chat\n"
+    "imv allow <name> | all: allow a person, or everyone, to use IMV (manager)\n"
+    "imv revoke <name> | all: revoke an authorization, or restrict IMV to allowed people again (manager)\n"
+    "imv allowed: allowed people\n"
+    "imv help: this help\n"
+    "Spoken (if the voice is transcribed): “{name}, give me a summary”, “{name}, what are the leads?”…\n"
+    "“imv” can be replaced by my name: “{name}, summary”, “{name}, leads”\n"
+    "Manager: any other request (“{name}, explain…”, spoken or in the chat) is handled as a free "
+    "conversation with the assistant, which takes into account the context and your previous exchanges."
 )
 
 HELP = (
@@ -45,7 +81,10 @@ HELP = (
     "imv retirer <nom> | tous : retire une autorisation, ou réserve de nouveau IMV aux autorisés (responsable)\n"
     "imv autorisés : personnes autorisées\n"
     "imv aide : cette aide\n"
-    "À l'oral (si la voix est transcrite) : « IMV, fais un résumé », « IMV, quelles pistes ? »…"
+    "À l'oral (si la voix est transcrite) : « IMV, fais un résumé », « IMV, quelles pistes ? »…\n"
+    "« imv » peut être remplacé par mon nom : « {name}, résumé », « {name}, quelles pistes ? »\n"
+    "Responsable : toute autre demande (« {name}, explique-moi… », à l'oral ou dans le chat) est traitée comme "
+    "une conversation libre avec l'assistant, qui tient compte du contexte et de vos échanges précédents."
 )
 
 # Formes canoniques (sans accents) des commandes de l'Étape 1.
@@ -69,15 +108,27 @@ _ALIASES = {
     "clore": "clore",
     "cloturer": "clore",
     "close": "clore",
+    # Commandes en anglais (« resume » reste le résumé : « imv continue » pour reprendre)
+    "summary": "resume",
+    "leads": "pistes",
+    "report": "rapport",
+    "continue": "reprise",
+    "unpause": "reprise",
+    "allowed": "autorises",
 }
 # Commandes ouvertes à tous, et commandes réservées aux responsables.
 _PUBLIC = {"aide"}
-_MANAGER_ONLY = {"autoriser", "retirer", "clore"}
+_MANAGER_ONLY = {"autoriser", "retirer", "clore", "chat"}
 _EVERYONE = {"tous", "tout le monde", "all", "everyone"}
 # Commandes prévues plus tard : reconnues, mais pas encore disponibles.
 _LATER: set[str] = set()
 # Orthographe affichée des formes canoniques qui portent un accent.
-_DISPLAY = {"demarrer": "démarrer", "resume": "résumé", "ask": "?", "autorises": "autorisés"}
+_DISPLAY = {"demarrer": "démarrer", "resume": "résumé", "ask": "?", "chat": "?", "autorises": "autorisés"}
+_DISPLAY_EN = {
+    "aide": "help", "demarrer": "start", "resume": "summary", "pistes": "leads", "rapport": "report",
+    "reprise": "continue", "statut": "status", "autoriser": "allow", "retirer": "revoke",
+    "autorises": "allowed", "clore": "close", "ask": "?", "chat": "?",
+}
 
 _COMMAND = re.compile(r"^\s*imv\b[\s:,.!-]*(?P<word>\S*)\s*(?P<arg>.*)$", re.IGNORECASE | re.DOTALL)
 
@@ -131,6 +182,7 @@ _NEGATION = re.compile(r"\b(pas|ne|not|never|jamais|aucunement)\b|\bn'|n't\b")
 # Réponse d'un responsable à la proposition de clôture (même normalisation)
 _YES = {"oui", "yes", "ok", "go", "vas-y", "vas y", "oui vas-y", "oui on clot", "oui clore", "on clot", "oui merci"}
 CLOSE_PROPOSAL_DELAY = 600  # secondes : délai de réponse, et minimum entre deux propositions
+CHAT_HISTORY = 6  # échanges de la conversation libre rappelés au LLM
 
 
 def _plain(text: str) -> str:
@@ -193,8 +245,11 @@ class IncidentAgent:
         context: str | None = None,
         managers: Iterable[str] = (),
         on_close: Callable[[], None] | None = None,
+        language: str = "fr",
     ) -> None:
         self.store = store
+        # Langue des messages postés et des analyses : celle des sous-titres de la réunion.
+        self.language = language
         self.session_id = session_id
         self.display_name = display_name
         self.send = send
@@ -220,24 +275,47 @@ class IncidentAgent:
         self.on_close = on_close
         self.closing = False
         self._close_proposed_at: float | None = None
-        # Appel vocal : « IMV » ou le nom propre de l'agent (« IMV - Nova » → « Nova »).
-        own = _plain(display_name.split(" - ")[-1])
-        names = _IMV_SPOKEN + (f"|{re.escape(own)}" if own and own != "imv" else "")
+        # Nom qui interpelle l'agent (« IMV - Oscar » → « Oscar »), à l'oral comme dans le chat.
+        self.name = display_name.split(" - ")[-1].strip() or "IMV"
+        own = _plain(self.name)
+        names = _IMV_SPOKEN + (f"|{re.escape(own)}" if own != "imv" else "")
         self._wake = re.compile(rf"^{_WAKE_FILLERS}(?:{names})\b[\s,.:;!?-]*(?P<rest>.*)$")
+        # Dans le chat : « Oscar, … », « Oscar : … » ou « @Oscar … » (mention Teams, éventuellement
+        # avec le nom complet « IMV - Oscar ») ; le nom seul suivi d'un espace peut désigner une
+        # personne (« Oscar a relancé le serveur »).
+        self._chat_wake = re.compile(
+            rf"^\s*(?P<at>@)?\s*(?:imv\s*-\s*)?{re.escape(self.name)}\b\s*(?P<sep>[,:!?]?)\s*(?P<rest>.*)$",
+            re.IGNORECASE | re.DOTALL,
+        )
         self._called_at: dict[str, float] = {}  # orateur → heure d'un appel seul, en attente de la demande
+        # Conversation libre des responsables : (auteur, demande, réponse), pour les questions de suivi.
+        self._chat_history: deque[tuple[str, str, str]] = deque(maxlen=CHAT_HISTORY)
+
+    def _t(self, fr: str, en: str) -> str:
+        """Texte dans la langue de la réunion."""
+        return en if self.language == "en" else fr
+
+    def _cmd_name(self, verb: str) -> str:
+        """Commande telle qu'affichée dans la langue de la réunion (« résumé » / « summary »)."""
+        return (_DISPLAY_EN if self.language == "en" else _DISPLAY).get(verb, verb)
 
     async def welcome(self) -> bool:
-        text = WELCOME
+        text = WELCOME[self._t("fr", "en")].format(name=self.name)
         if self.transcribing:
-            text += (
+            text += self._t(
                 "\nJe transcris aussi ce qui est dit à l'oral, à partir des sous-titres Teams ; "
                 "« imv pause » suspend aussi cette transcription. Pour me parler à l'oral, "
-                f"interpellez-moi : « IMV, un résumé s'il te plaît »{self._wake_hint()}."
+                f"interpellez-moi : « {self.name}, un résumé s'il te plaît ».",
+                "\nI also transcribe what is said aloud, from the Teams captions; "
+                "“imv pause” also stops this transcription. To talk to me, "
+                f"call me: “{self.name}, a summary please”.",
             )
         if self.managers:
-            text += (
+            text += self._t(
                 f"\nCommandes réservées à {self._managers_label()}, qui peut autoriser d'autres participants "
-                "(« imv autoriser <nom> » ou « imv autoriser tous »)."
+                "(« imv autoriser <nom> » ou « imv autoriser tous »).",
+                f"\nCommands reserved to {self._managers_label()}, who can allow other participants "
+                "(“imv allow <name>” or “imv allow all”).",
             )
         return await self.reply(text, kind="welcome")
 
@@ -265,18 +343,23 @@ class IncidentAgent:
                 await self._propose_close_if_over(msg)
             return
         self._seen.setdefault(_name_key(msg.sender), msg.sender)
-        command = parse_command(msg.text)
+        command = parse_command(msg.text) or self._named_command(msg.text)
         if command is not None:
-            await self.execute(command, msg.sender)
+            await self.execute(self._as_chat(command, msg.sender), msg.sender)
         elif self._accepts_close(msg):
             await self.execute(Command("clore", "clore", ""), msg.sender)
         elif await self._propose_close_if_over(msg):
             pass
         elif not self.paused and contains_secret(msg.text):
             await self.reply(
-                f"Attention : le message de {msg.sender} semble contenir un mot de passe ou un jeton. "
-                "Supprimez-le du chat et faites changer ce secret ; partagez-le plutôt par un canal sécurisé. "
-                "(Il n'est pas transmis à l'analyse.)",
+                self._t(
+                    f"Attention : le message de {msg.sender} semble contenir un mot de passe ou un jeton. "
+                    "Supprimez-le du chat et faites changer ce secret ; partagez-le plutôt par un canal sécurisé. "
+                    "(Il n'est pas transmis à l'analyse.)",
+                    f"Warning: {msg.sender}'s message seems to contain a password or a token. "
+                    "Delete it from the chat and have this secret changed; share it through a secure channel instead. "
+                    "(It is not sent for analysis.)",
+                ),
                 kind="proactive",
                 rule_id="secret_posted",
             )
@@ -287,14 +370,20 @@ class IncidentAgent:
             return
         if heard is not None:
             quote = heard if len(heard) <= 80 else heard[:77] + "…"
-            arg = f" {command.arg}" if command.arg and command.verb != "ask" else ""
-            await self.reply(f"{author} (à l'oral) : « {quote} » → imv {command.word}{arg}")
+            arg = f" {command.arg}" if command.arg and command.verb not in ("ask", "chat") else ""
+            await self.reply(self._t(
+                f"{author} (à l'oral) : « {quote} » → imv {self._cmd_name(command.verb)}{arg}",
+                f"{author} (spoken): “{quote}” → imv {self._cmd_name(command.verb)}{arg}",
+            ))
         if command.verb == "clore":
             self._background(self._close(author))
             return
         if command.verb in TASKS:
             if self.llm is None:
-                await self.reply("L'analyse n'est pas activée pour cette session (option --llm).")
+                await self.reply(self._t(
+                    "L'analyse n'est pas activée pour cette session (option --llm).",
+                    "Analysis is not enabled for this session (--llm option).",
+                ))
                 return
             self._background(self._analyze(command, author))
             return
@@ -302,15 +391,41 @@ class IncidentAgent:
         if handler is not None:
             text = handler(command.arg, author)
         elif command.verb in _LATER:
-            text = f"« imv {command.word} » n'est pas encore disponible."
+            text = self._t(f"« imv {command.word} » n'est pas encore disponible.", f"“imv {command.word}” is not available yet.")
         else:
-            text = f"Commande inconnue : « {command.word} »."
+            text = self._t(f"Commande inconnue : « {command.word} ».", f"Unknown command: “{command.word}”.")
             close = difflib.get_close_matches(command.verb, [*_ALIASES, *TASKS, *_LATER], n=1, cutoff=0.6)
             if close:
-                verb = _ALIASES.get(close[0], close[0])
-                text += f" Vouliez-vous dire « imv {_DISPLAY.get(verb, verb)} » ?"
-            text += " Tapez « imv aide » pour la liste."
+                verb = self._cmd_name(_ALIASES.get(close[0], close[0]))
+                text += self._t(f" Vouliez-vous dire « imv {verb} » ?", f" Did you mean “imv {verb}”?")
+            text += self._t(" Tapez « imv aide » pour la liste.", " Type “imv help” for the list.")
         await self.reply(text)
+
+    def _named_command(self, text: str) -> Command | None:
+        """« Oscar, résumé » → comme « imv résumé » ; None si le message ne s'adresse pas à l'agent."""
+        if _plain(self.name) == "imv":
+            return None  # déjà couvert par parse_command
+        m = self._chat_wake.match(text)
+        if m is None or not (m["at"] or m["sep"] or not m["rest"].strip()):
+            return None
+        return parse_command(f"imv {m['rest']}")
+
+    def _known(self, verb: str) -> bool:
+        return verb in TASKS or verb in _LATER or verb == "clore" or hasattr(self, f"_cmd_{verb}")
+
+    def _as_chat(self, command: Command, author: str) -> Command:
+        """« imv <demande libre> » ou « imv ? … » d'un responsable → conversation libre. Une faute de
+        frappe sur une commande (« imv resmué », « imv demarer INC1 ») garde sa suggestion."""
+        if self.llm is None or _name_key(author) not in self.managers:
+            return command
+        if command.verb == "ask":
+            return Command("chat", "?", command.arg) if command.arg.strip() else command
+        if self._known(command.verb):
+            return command
+        typo = difflib.get_close_matches(command.verb, [*_ALIASES, *TASKS, *_LATER], n=1, cutoff=0.6)
+        if typo and len(command.arg.split()) <= 1:
+            return command
+        return Command("chat", "?", f"{command.word} {command.arg}".strip())
 
     async def _authorize(self, command: Command, author: str) -> bool:
         if command.verb in _PUBLIC:
@@ -319,10 +434,12 @@ class IncidentAgent:
         if not self.managers:
             self.managers[key] = author
             log.info("Responsable IMV : %s (première commande)", author)
-            await self.reply(
+            await self.reply(self._t(
                 f"{author} est responsable d'IMV (première personne à l'utiliser) : les commandes lui sont "
-                "réservées. « imv autoriser <nom> » ou « imv autoriser tous » pour en ouvrir l'accès."
-            )
+                "réservées. « imv autoriser <nom> » ou « imv autoriser tous » pour en ouvrir l'accès.",
+                f"{author} is the IMV manager (first person to use it): commands are reserved to them. "
+                "“imv allow <name>” or “imv allow all” to open access.",
+            ))
             return True
         if key in self.managers:
             return True
@@ -331,15 +448,19 @@ class IncidentAgent:
         log.info("Commande « imv %s » refusée à %s", command.word, author)
         if key not in self._refused:
             self._refused.add(key)
-            reserved = "aux responsables d'IMV" if command.verb in _MANAGER_ONLY else "aux personnes autorisées"
-            await self.reply(
-                f"{author}, « imv {command.word} » est réservé {reserved}. "
-                f"{self._managers_label()} peut vous ajouter : imv autoriser {author}"
-            )
+            manager_only = command.verb in _MANAGER_ONLY
+            word = self._cmd_name(command.verb) if command.verb in ("ask", "chat") else command.word
+            await self.reply(self._t(
+                f"{author}, « imv {word} » est réservé "
+                f"{'aux responsables' if manager_only else 'aux personnes autorisées'} d'IMV. "
+                f"{self._managers_label()} peut vous ajouter : imv autoriser {author}",
+                f"{author}, “imv {word}” is reserved to {'IMV managers' if manager_only else 'allowed people'}. "
+                f"{self._managers_label()} can add you: imv allow {author}",
+            ))
         return False
 
     def _managers_label(self) -> str:
-        return " ou ".join(self.managers.values())
+        return self._t(" ou ", " or ").join(self.managers.values())
 
     def _resolve_name(self, arg: str) -> tuple[str | None, str]:
         """Nom à autoriser : complété d'après les auteurs vus (« Sophie » → « Sophie Lambert »).
@@ -353,8 +474,14 @@ class IncidentAgent:
         if len(matches) == 1:
             return matches[0], ""
         if matches:
-            return None, "Plusieurs participants correspondent : " + ", ".join(matches) + ". Précisez le nom."
-        return name, " Cette personne n'a pas encore écrit dans le chat : son nom doit être exactement celui affiché par Teams."
+            return None, self._t(
+                f"Plusieurs participants correspondent : {', '.join(matches)}. Précisez le nom.",
+                f"Several participants match: {', '.join(matches)}. Please specify the name.",
+            )
+        return name, self._t(
+            " Cette personne n'a pas encore écrit dans le chat : son nom doit être exactement celui affiché par Teams.",
+            " This person hasn't written in the chat yet: their name must be exactly the one shown by Teams.",
+        )
 
     async def _analyze(self, command: Command, author: str) -> None:
         assert self.llm is not None
@@ -369,13 +496,20 @@ class IncidentAgent:
                 self.context,
                 requester=author,
                 agent_name=self.display_name,
+                history=self._chat_history if command.verb == "chat" else (),
+                language=self.language,
             )
+            if command.verb == "chat" and text:
+                self._chat_history.append((author, command.arg, text))
         except UsageError as exc:
             text = str(exc)
         except LLMError as exc:
             log.error("Analyse « %s » impossible : %s", command.word, exc)
-            text = f"Analyse « {command.word} » impossible pour le moment ({exc})."
-        await self.reply(text or f"Analyse « {command.word} » : réponse vide.")
+            text = self._t(
+                f"Analyse « {command.word} » impossible pour le moment ({exc}).",
+                f"“{command.word}” analysis unavailable for now ({exc}).",
+            )
+        await self.reply(text or self._t(f"Analyse « {command.word} » : réponse vide.", f"“{command.word}” analysis: empty answer."))
 
     def _background(self, coro) -> None:
         """Analyse LLM en tâche de fond : la lecture du chat continue pendant ce temps."""
@@ -384,10 +518,6 @@ class IncidentAgent:
         task.add_done_callback(self._analyses.discard)
 
     # -- commandes vocales ------------------------------------------------
-
-    def _wake_hint(self) -> str:
-        own = self.display_name.split(" - ")[-1].strip()
-        return f" ou « {own}, … »" if own and _plain(own) != "imv" else ""
 
     async def _voice_command(self, msg: ChatMessage) -> bool:
         """Exécute une demande orale adressée à l'agent. True si la phrase lui était adressée."""
@@ -411,12 +541,17 @@ class IncidentAgent:
             if _INCIDENT_OVER.search(_plain(request)):
                 return False  # « IMV, l'incident est résolu » : proposition de clôture
             if self.llm is None:
-                await self.reply(
+                await self.reply(self._t(
                     f"{msg.sender}, je n'ai pas compris « {heard} ». "
-                    "Dites par exemple « IMV, un résumé » ou tapez « imv aide »."
-                )
+                    f"Dites par exemple « {self.name}, un résumé » ou tapez « imv aide ».",
+                    f"{msg.sender}, I didn't understand “{heard}”. "
+                    f"Say for example “{self.name}, a summary” or type “imv help”.",
+                ))
                 return True
-            command = Command("ask", "?", heard)  # question libre
+            if key in self.managers:
+                command = Command("chat", "?", heard)  # conversation libre du responsable
+            else:
+                command = Command("ask", "?", heard)  # question libre
         await self.execute(command, msg.sender, heard=heard)
         return True
 
@@ -433,15 +568,25 @@ class IncidentAgent:
             return False
         self._close_proposed_at = now
         quote = msg.text if len(msg.text) <= 80 else msg.text[:77] + "…"
-        oral = " (à l'oral)" if msg.source == "transcript" else ""
+        oral = self._t(" (à l'oral)", " (spoken)") if msg.source == "transcript" else ""
         if self.managers:
-            ask = f"{self._managers_label()}, voulez-vous clore l'incident ? Répondez « oui » ou tapez « imv clore »"
+            ask = self._t(
+                f"{self._managers_label()}, voulez-vous clore l'incident ? Répondez « oui » ou tapez « imv clore »",
+                f"{self._managers_label()}, do you want to close the incident? Answer “yes” or type “imv close”",
+            )
         else:
-            ask = "Le responsable de l'incident peut le clore en tapant « imv clore »"
+            ask = self._t(
+                "Le responsable de l'incident peut le clore en tapant « imv clore »",
+                "The incident manager can close it by typing “imv close”",
+            )
         log.info("Fin d'incident évoquée par %s : proposition de clôture", msg.sender)
         await self.reply(
-            f"{msg.sender}{oral} : « {quote} ». L'incident semble terminé. {ask} : je publierai le "
-            "résumé de fin, puis je quitterai la réunion.",
+            self._t(
+                f"{msg.sender}{oral} : « {quote} ». L'incident semble terminé. {ask} : je publierai le "
+                "résumé de fin, puis je quitterai la réunion.",
+                f"{msg.sender}{oral}: “{quote}”. The incident seems over. {ask}: I will post the "
+                "final summary, then leave the meeting.",
+            ),
             kind="proactive",
             rule_id="incident_over",
         )
@@ -457,15 +602,21 @@ class IncidentAgent:
 
     async def _close(self, author: str) -> None:
         if self.closing:
-            await self.reply("Clôture déjà en cours.")
+            await self.reply(self._t("Clôture déjà en cours.", "Closing already in progress."))
             return
         self.closing = True
         log.info("Clôture de l'incident demandée par %s", author)
         if self.llm is not None:
-            await self.reply(f"Clôture demandée par {author} : je rédige le résumé de fin…")
+            await self.reply(self._t(
+                f"Clôture demandée par {author} : je rédige le résumé de fin…",
+                f"Closing requested by {author}: writing the final summary…",
+            ))
         await self.reply(await self._final_summary(), kind="report")
         self.store.close_incident(self.session_id)
-        await self.reply("Fin du suivi de l'incident par IMV. Je quitte la réunion, merci à tous.")
+        await self.reply(self._t(
+            "Fin du suivi de l'incident par IMV. Je quitte la réunion, merci à tous.",
+            "End of incident follow-up by IMV. I'm leaving the meeting, thank you all.",
+        ))
         if self.on_close is not None:
             self.on_close()
 
@@ -476,7 +627,8 @@ class IncidentAgent:
         if self.llm is not None:
             try:
                 text = await analyze(
-                    self.llm, "rapport", messages, ref, context=self.context, agent_name=self.display_name
+                    self.llm, "rapport", messages, ref, context=self.context, agent_name=self.display_name,
+                    language=self.language,
                 )
                 if text.strip():
                     return text
@@ -485,14 +637,21 @@ class IncidentAgent:
         # Sans LLM (ou en erreur) : faits enregistrés, sans interprétation.
         human = [m for m in messages if m["source"] != "system" and parse_command(m["text"]) is None]
         people = sorted({m["author_name"] for m in human})
-        lines = [f"Résumé de fin{f' — incident {ref}' if ref else ''}"]
+        lines = [self._t("Résumé de fin", "Final summary") + (f" — incident {ref}" if ref else "")]
         if human:
             start, end = (human[0]["sent_at"] or human[0]["captured_at"]), (human[-1]["sent_at"] or human[-1]["captured_at"])
-            lines.append(f"• Échanges enregistrés : {len(human)} message{'s' if len(human) > 1 else ''}, de {local_hour(start)} à {local_hour(end)}")
-            lines.append(f"• Participants : {', '.join(people)}")
+            s = "s" if len(human) > 1 else ""
+            lines.append(self._t(
+                f"• Échanges enregistrés : {len(human)} message{s}, de {local_hour(start)} à {local_hour(end)}",
+                f"• Recorded exchanges: {len(human)} message{s}, from {local_hour(start)} to {local_hour(end)}",
+            ))
+            lines.append(self._t("• Participants : ", "• Participants: ") + ", ".join(people))
         else:
-            lines.append("• Aucun message enregistré.")
-        lines.append("Analyse non disponible (pas de LLM) : relisez l'historique avec « imo_agent.py history ».")
+            lines.append(self._t("• Aucun message enregistré.", "• No recorded messages."))
+        lines.append(self._t(
+            "Analyse non disponible (pas de LLM) : relisez l'historique avec « imo_agent.py history ».",
+            "Analysis unavailable (no LLM): review the history with “imo_agent.py history”.",
+        ))
         return "\n".join(lines)
 
     async def wait_analyses(self) -> None:
@@ -506,7 +665,7 @@ class IncidentAgent:
         delivered = await self.send(text)
         self.store.add_intervention(self.session_id, kind, text, delivered, rule_id)
         if delivered:
-            log.info("IMV → chat : %s", text.splitlines()[0])
+            log.info("%s → chat : %s", self.name, text.splitlines()[0])
         else:
             self._own.remove(fingerprint)
             log.warning("Réponse non publiée (chat en lecture seule ?) :\n%s", text)
@@ -526,75 +685,123 @@ class IncidentAgent:
     # -- commandes --------------------------------------------------------
 
     def _cmd_aide(self, arg: str, author: str) -> str:
-        return HELP
+        return self._t(HELP, HELP_EN).format(name=self.name)
 
     def _cmd_demarrer(self, arg: str, author: str) -> str:
         incident = self.store.session_incident(self.session_id)
         if incident is not None:
-            return f"Suivi déjà démarré : {incident['ref'] or 'incident sans référence'}."
+            return self._t(
+                f"Suivi déjà démarré : {incident['ref'] or 'incident sans référence'}.",
+                f"Follow-up already started: {incident['ref'] or 'incident without reference'}.",
+            )
         ref = arg.split()[0] if arg else None
         self.start_incident(ref, author)
-        return (
+        return self._t(
             f"Suivi de l'incident {ref or '(sans référence)'} démarré, IM : {author}. "
-            "Les messages déjà captés y sont rattachés."
+            "Les messages déjà captés y sont rattachés.",
+            f"Follow-up of incident {ref or '(no reference)'} started, IM: {author}. "
+            "Messages already captured are attached to it.",
         )
 
     def _cmd_pause(self, arg: str, author: str) -> str:
         if self.paused:
-            return "L'enregistrement est déjà en pause. « imv reprise » pour reprendre."
+            return self._t(
+                "L'enregistrement est déjà en pause. « imv reprise » pour reprendre.",
+                "Recording is already paused. “imv continue” to resume.",
+            )
         self.paused = True
-        return "Enregistrement du chat en pause. « imv reprise » pour reprendre."
+        return self._t(
+            "Enregistrement du chat en pause. « imv reprise » pour reprendre.",
+            "Chat recording paused. “imv continue” to resume.",
+        )
 
     def _cmd_reprise(self, arg: str, author: str) -> str:
         if not self.paused:
-            return "L'enregistrement est déjà actif."
+            return self._t("L'enregistrement est déjà actif.", "Recording is already active.")
         self.paused = False
-        return "Enregistrement du chat repris."
+        return self._t("Enregistrement du chat repris.", "Chat recording resumed.")
 
     def _cmd_statut(self, arg: str, author: str) -> str:
         incident = self.store.session_incident(self.session_id)
+        count = self.store.count_messages(self.session_id)
+        people = len(self.managers) + len(self.allowed)
+        if self.language == "en":
+            ref = (incident["ref"] or "no reference") if incident else "not started (imv start [ID])"
+            access = "open to all" if self.open_to_all else f"restricted ({people} people)"
+            return (
+                f"Incident: {ref} · recording: {'paused' if self.paused else 'active'} · "
+                f"recorded messages: {count} · commands: {access}"
+            )
         ref = (incident["ref"] or "sans référence") if incident else "non démarré (imv démarrer [ID])"
-        access = "ouvertes à tous" if self.open_to_all else f"réservées ({len(self.managers) + len(self.allowed)} pers.)"
+        access = "ouvertes à tous" if self.open_to_all else f"réservées ({people} pers.)"
         return (
             f"Incident : {ref} · enregistrement : {'en pause' if self.paused else 'actif'} · "
-            f"messages enregistrés : {self.store.count_messages(self.session_id)} · commandes : {access}"
+            f"messages enregistrés : {count} · commandes : {access}"
         )
 
     def _cmd_autoriser(self, arg: str, author: str) -> str:
         if not arg.strip():
-            return "Précisez qui autoriser : imv autoriser <nom>, ou imv autoriser tous."
+            return self._t(
+                "Précisez qui autoriser : imv autoriser <nom>, ou imv autoriser tous.",
+                "Specify who to allow: imv allow <name>, or imv allow all.",
+            )
         if _name_key(arg) in _EVERYONE:
             self.open_to_all = True
-            return "Commandes IMV ouvertes à tous les participants. « imv retirer tous » pour les réserver de nouveau."
+            return self._t(
+                "Commandes IMV ouvertes à tous les participants. « imv retirer tous » pour les réserver de nouveau.",
+                "IMV commands open to all participants. “imv revoke all” to restrict them again.",
+            )
         name, note = self._resolve_name(arg)
         if name is None:
             return note
         key = _name_key(name)
         if key in self.managers or key in self.allowed:
-            return f"{name} est déjà autorisé."
+            return self._t(f"{name} est déjà autorisé.", f"{name} is already allowed.")
         self.allowed[key] = name
         self._refused.discard(key)
-        return f"{name} peut maintenant utiliser les commandes IMV.{note}"
+        return self._t(f"{name} peut maintenant utiliser les commandes IMV.{note}", f"{name} can now use IMV commands.{note}")
 
     def _cmd_retirer(self, arg: str, author: str) -> str:
         if not arg.strip():
-            return "Précisez qui retirer : imv retirer <nom>, ou imv retirer tous."
+            return self._t(
+                "Précisez qui retirer : imv retirer <nom>, ou imv retirer tous.",
+                "Specify who to revoke: imv revoke <name>, or imv revoke all.",
+            )
         if _name_key(arg) in _EVERYONE:
             self.open_to_all = False
             self.allowed.clear()
-            return f"Commandes IMV de nouveau réservées à {self._managers_label()}."
+            return self._t(
+                f"Commandes IMV de nouveau réservées à {self._managers_label()}.",
+                f"IMV commands reserved to {self._managers_label()} again.",
+            )
         key = _name_key(arg.strip().lstrip("@"))
         matches = [k for k, n in self.allowed.items() if k == key or all(w in k.split() for w in key.split())]
         if key in self.managers:
-            return f"{self.managers[key]} est responsable d'IMV : son accès ne peut pas être retiré."
-        if len(matches) != 1:
-            return "Plusieurs personnes correspondent : précisez le nom." if matches else f"{arg.strip()} n'est pas dans la liste des autorisés."
+            return self._t(
+                f"{self.managers[key]} est responsable d'IMV : son accès ne peut pas être retiré.",
+                f"{self.managers[key]} is the IMV manager: their access cannot be revoked.",
+            )
+        if len(matches) > 1:
+            return self._t("Plusieurs personnes correspondent : précisez le nom.", "Several people match: please specify the name.")
+        if not matches:
+            return self._t(f"{arg.strip()} n'est pas dans la liste des autorisés.", f"{arg.strip()} is not in the allowed list.")
         name = self.allowed.pop(matches[0])
-        extra = " (les commandes restent ouvertes à tous : « imv retirer tous » pour les réserver)" if self.open_to_all else ""
-        return f"{name} ne peut plus utiliser les commandes IMV{extra}."
+        if self.open_to_all:
+            return self._t(
+                f"{name} ne peut plus utiliser les commandes IMV (les commandes restent ouvertes à tous : "
+                "« imv retirer tous » pour les réserver).",
+                f"{name} can no longer use IMV commands (commands remain open to all: “imv revoke all” to restrict them).",
+            )
+        return self._t(f"{name} ne peut plus utiliser les commandes IMV.", f"{name} can no longer use IMV commands.")
 
     def _cmd_autorises(self, arg: str, author: str) -> str:
         if self.open_to_all:
-            return f"Commandes ouvertes à tous. Responsable : {self._managers_label()}."
-        others = ", ".join(self.allowed.values()) or "personne d'autre"
-        return f"Responsable : {self._managers_label()}. Autorisés : {others}."
+            return self._t(
+                f"Commandes ouvertes à tous. Responsable : {self._managers_label()}.",
+                f"Commands open to all. Manager: {self._managers_label()}.",
+            )
+        others = ", ".join(self.allowed.values()) or self._t("personne d'autre", "nobody else")
+        return self._t(
+            f"Responsable : {self._managers_label()}. Autorisés : {others}.",
+            f"Manager: {self._managers_label()}. Allowed: {others}.",
+        )

@@ -58,7 +58,7 @@ def test_runner_joins_reads_and_stops(fake_teams, caplog):
             await asyncio.sleep(0.1)
         assert runner.status == "in_meeting"
         sent = await runner.session.page.evaluate("window.sent")
-        assert sent[0].startswith(WELCOME)
+        assert sent[0].startswith(WELCOME["fr"].format(name="Test"))
 
         runner.stop()
         assert await asyncio.wait_for(task, 10) == 0

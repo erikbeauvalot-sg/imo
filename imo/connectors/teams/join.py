@@ -411,6 +411,43 @@ class TeamsSession:
             await self.snapshot("captions-speech")
         return await self._wait_click(sel.CAPTIONS_ON, 3)
 
+    async def set_spoken_language(self, language: str) -> bool:
+        """Règle la langue parlée des sous-titres (« fr », « en ») ; False si Teams ne l'accepte pas.
+
+        Elle vaut pour toute la réunion : Teams ne reconnaît qu'une langue à la fois.
+        Prototype : chaque étape est journalisée et capturée (language-*) pour ajuster les sélecteurs."""
+        page = self._require_page()
+        label = sel.SPOKEN_LANGUAGES[language]
+        opened = await self._click_first(sel.CAPTIONS_SETTINGS_BUTTON)
+        if not opened and await self._click_first(sel.MORE_BUTTON):
+            await page.wait_for_timeout(800)  # menu animé
+            opened = await self._wait_click(sel.LANGUAGE_SPEECH_MENU, 3)
+        if opened:
+            await page.wait_for_timeout(800)
+            log.info("Langue des sous-titres, menu : %s", " | ".join(await self._menu_items()) or "(vide)")
+            opened = await self._wait_click(sel.LANGUAGE_SETTINGS, 3)
+        if not opened:
+            return await self._language_failed("menu « Language settings » introuvable")
+        if not await self._wait_click(sel.SPOKEN_LANGUAGE_DROPDOWN, 5):
+            return await self._language_failed("liste « Spoken language » introuvable")
+        await self.snapshot("language-list")
+        option = page.get_by_role("option", name=label, exact=True)
+        try:
+            await option.first.click(timeout=3000)
+        except Exception:  # noqa: BLE001
+            return await self._language_failed(f"langue « {label} » absente de la liste")
+        if not await self._wait_click(sel.SPOKEN_LANGUAGE_CONFIRM, 3):
+            return await self._language_failed("bouton de confirmation introuvable")
+        log.info("Langue des sous-titres : %s", label)
+        await self.snapshot("language-set")
+        return True
+
+    async def _language_failed(self, reason: str) -> bool:
+        await self.snapshot("language-failed")
+        await self._require_page().keyboard.press("Escape")
+        log.warning("Langue des sous-titres inchangée : %s", reason)
+        return False
+
     async def _menu_items(self) -> list[str]:
         """Libellés des entrées de menu visibles (hors vignettes vidéo, qui ont aussi role=menuitem)."""
         return await self._require_page().evaluate(

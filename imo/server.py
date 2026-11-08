@@ -11,6 +11,7 @@ import os
 from contextlib import asynccontextmanager
 from dataclasses import replace
 from pathlib import Path
+from typing import Literal
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
@@ -18,7 +19,7 @@ from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
 from imo.llm import PROVIDERS, LLMError
-from imo.runner import AGENT_NAMES, MeetingConfig, MeetingRunner, resolve_context_path
+from imo.runner import DEFAULT_AGENT_NAME, MeetingConfig, MeetingRunner, resolve_context_path
 from imo.storage import Store
 
 log = logging.getLogger("imo")
@@ -31,8 +32,10 @@ class MeetingRequest(BaseModel):
     name: str | None = None
     im: list[str] = []
     incident: str | None = None
-    captions: bool = False
-    avatar: bool = False
+    captions: bool = True
+    # Langue des sous-titres et des messages de l'agent ; None : celle de la réunion, messages en français
+    captions_language: Literal["fr", "en"] | None = "en"
+    avatar: bool = True
     welcome: bool = True
     llm: str | None = None  # None : celui du serveur (--llm) ; "" : aucune analyse
 
@@ -62,6 +65,7 @@ class Meetings:
             managers=managers,
             welcome=req.welcome,
             captions=req.captions,
+            captions_language=req.captions_language,
             avatar="robot" if req.avatar else None,
             llm=self.defaults.llm if req.llm is None else (req.llm or None),
         )
@@ -73,7 +77,7 @@ class Meetings:
         """Nouvelle session avec le lien, le nom et les options d'une session passée."""
         row = self.store.session(session_id)
         options = self.store.session_options(session_id) or {}  # sessions anciennes : lien et nom seulement
-        known = {"incident", "managers", "welcome", "captions", "avatar", "llm", "llm_model"}
+        known = {"incident", "managers", "welcome", "captions", "captions_language", "avatar", "llm", "llm_model"}
         config = replace(
             self.defaults,
             url=row["meeting_url"],
@@ -204,7 +208,7 @@ def create_app(db: Path | str, defaults: MeetingConfig, allowed_hosts: list[str]
             "providers": list(PROVIDERS),
             "llm": defaults.llm,
             "context": str(context) if context else None,
-            "agent_names": list(AGENT_NAMES),
+            "agent_name": DEFAULT_AGENT_NAME,
             "im": os.environ.get("IMV_IM", "").strip() or None,
         }
 

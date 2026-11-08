@@ -74,9 +74,28 @@
   // Sous-titres : More → Captions, comme le vrai Teams pour un invité (08/11/2026) ;
   // ?captionsmenu=speech : ancien parcours More → Language and speech → Turn on live captions ;
   // ?nocaptions=1 : pas de sous-titres.
+  // Langue parlée : « … » du bandeau → Language settings → liste → langue → Update (window.spokenLanguage).
   function showCaptions() {
     document.getElementById('menu').innerHTML = '';
-    document.getElementById('captions').innerHTML = '<div data-tid="closed-captions-renderer"></div>';
+    document.getElementById('captions').innerHTML = '<div data-tid="closed-captions-renderer"></div>' +
+      '<button data-tid="closed-captions-settings-button" aria-label="Captions settings">…</button>';
+    document.querySelector('[data-tid="closed-captions-settings-button"]').onclick = openLanguageMenu;
+  }
+  function openLanguageMenu() {
+    const menu = document.getElementById('menu');
+    menu.innerHTML = '<div role="menu"><div role="menuitem">Language settings</div></div>';
+    menu.querySelector('[role="menuitem"]').onclick = () => {
+      menu.innerHTML = '<div role="dialog"><button role="combobox" aria-label="Spoken language">English (United States)</button>' +
+        '<div id="options"></div><button id="update">Update</button></div>';
+      let choice = null;
+      menu.querySelector('[role="combobox"]').onclick = () => {
+        const options = menu.querySelector('#options');
+        options.innerHTML = '<div role="listbox"><div role="option">English (United States)</div>' +
+          '<div role="option">French (France)</div><div role="option">French (Canada)</div></div>';
+        options.querySelectorAll('[role="option"]').forEach((o) => { o.onclick = () => { choice = o.textContent; }; });
+      };
+      menu.querySelector('#update').onclick = () => { window.spokenLanguage = choice; menu.innerHTML = ''; };
+    };
   }
   function openMoreMenu() {
     const menu = document.getElementById('menu');

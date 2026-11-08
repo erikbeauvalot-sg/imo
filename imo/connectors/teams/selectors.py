@@ -151,6 +151,37 @@ CAPTIONS_CONTAINER = [
     '[data-tid*="closed-caption"]',
 ]
 
+# Langue parlée des sous-titres : « … » du bandeau des sous-titres (ou menu More → Language and
+# speech) → « Language settings » → liste « Spoken language » → langue → « Update ».
+# Sélecteurs à confirmer sur le vrai Teams (captures « language-* » du dossier debug).
+SPOKEN_LANGUAGES = {"fr": "French (France)", "en": "English (United States)"}
+CAPTIONS_SETTINGS_BUTTON = [
+    '[data-tid="closed-captions-settings-button"]',
+    '[data-tid*="closed-caption"] button[aria-label*="settings"]',
+    '[data-tid*="closed-caption"] button[aria-label*="options"]',
+    'button[aria-label*="Captions settings"]',
+    'button[aria-label*="Caption settings"]',
+]
+LANGUAGE_SETTINGS = [
+    '[role="menuitem"]:has-text("Language settings")',
+    '[role="menuitem"]:has-text("Change spoken language")',
+    '[role="menuitem"]:has-text("Spoken language")',
+    'button:has-text("Language settings")',
+]
+SPOKEN_LANGUAGE_DROPDOWN = [
+    '[data-tid="spoken-language-dropdown"]',
+    '[role="combobox"][aria-label*="poken language"]',
+    'button[aria-label*="poken language"]',
+    '[role="combobox"]',
+]
+SPOKEN_LANGUAGE_CONFIRM = [
+    'button:has-text("Update")',
+    'button:has-text("Confirm")',
+    'button:has-text("Save")',
+    'button:has-text("Apply")',
+]
+
+
 # Messages d'événement affichés par Teams dans le chat (expressions régulières,
 # insensibles à la casse) : enregistrés avec source="system", jamais pris pour des commandes.
 SYSTEM_MESSAGES = [

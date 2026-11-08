@@ -129,7 +129,7 @@ def test_agent_welcome_and_commands_in_chat(query):
             await session.close()
 
     sent, messages, incident = asyncio.run(scenario())
-    assert sent[0].startswith(WELCOME)
+    assert sent[0].startswith(WELCOME["fr"].format(name="Assistant IM"))
     assert sent[1].startswith("Suivi de l'incident INC0012345 démarré")
     # Ni l'accueil ni la réponse de l'agent ne sont enregistrés comme messages humains
     assert messages == [
@@ -367,6 +367,20 @@ def test_captions_menu_variants(menu):
             await session.close()
 
     assert asyncio.run(scenario()) is True
+
+
+def test_spoken_language():
+    async def scenario():
+        session = await _session("?lobby=100")
+        try:
+            await session.join(admission_timeout=10)
+            assert await session.enable_captions(timeout=5) is True
+            assert await session.set_spoken_language("fr") is True
+            return await session.page.evaluate("window.spokenLanguage")
+        finally:
+            await session.close()
+
+    assert asyncio.run(scenario()) == "French (France)"
 
 
 def test_captions_unavailable(caplog):

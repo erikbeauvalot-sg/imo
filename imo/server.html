@@ -74,16 +74,22 @@
         <label for="url">Lien de la réunion Teams</label>
         <input id="url" type="url" required placeholder="https://teams.microsoft.com/…">
         <label for="name">Nom affiché</label>
-        <input id="name" type="text" placeholder="Tiré au hasard">
+        <input id="name" type="text" placeholder="IMV - Oscar">
         <label for="im">Responsable(s) d'IMV, séparés par des virgules</label>
         <input id="im" type="text" placeholder="La première personne qui tape une commande">
         <label for="incident">Référence de l'incident</label>
         <input id="incident" type="text" placeholder="Facultatif">
+        <label for="captions-language">Langue de la réunion (sous-titres et messages de l'agent)</label>
+        <select id="captions-language">
+          <option value="en" selected>Anglais</option>
+          <option value="fr">Français</option>
+          <option value="">Sous-titres inchangés, messages en français</option>
+        </select>
         <label for="llm">Analyses LLM</label>
         <select id="llm"></select>
         <div class="checks">
-          <label><input id="captions" type="checkbox"> Transcrire la voix</label>
-          <label><input id="avatar" type="checkbox"> Avatar</label>
+          <label><input id="captions" type="checkbox" checked> Transcrire la voix</label>
+          <label><input id="avatar" type="checkbox" checked> Avatar</label>
           <label><input id="welcome" type="checkbox" checked> Message d'accueil</label>
         </div>
         <div class="row"><span class="hint" id="context"></span><button id="submit">Lancer</button></div>
@@ -158,6 +164,7 @@ $("form").addEventListener("submit", async (e) => {
         incident: $("incident").value.trim() || null,
         llm: $("llm").value,
         captions: $("captions").checked,
+        captions_language: $("captions-language").value || null,
         avatar: $("avatar").checked,
         welcome: $("welcome").checked,
       }),

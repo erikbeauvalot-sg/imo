@@ -16,7 +16,7 @@ from imo.analysis import TASKS, analyze, load_context
 from imo.connectors.teams import TeamsJoinError
 from imo.llm import PROVIDERS, LLMError, make_llm
 from imo.llm.providers import DEFAULT_MODELS
-from imo.runner import AGENT_NAMES, DEFAULT_CONTEXT, MeetingConfig, MeetingRunner, resolve_context_path
+from imo.runner import DEFAULT_AGENT_NAME, DEFAULT_CONTEXT, MeetingConfig, MeetingRunner, resolve_context_path
 from imo.sinks import ConsoleSink, JsonlSink
 from imo.storage import Store
 
@@ -32,8 +32,8 @@ def build_parser() -> argparse.ArgumentParser:
     join.add_argument(
         "--name",
         default=os.environ.get("IMV_NAME") or None,
-        help="Nom affiché (défaut : $IMV_NAME, sinon « IMV - » suivi d'un nom tiré au hasard : "
-        + ", ".join(AGENT_NAMES) + ")",
+        help=f"Nom affiché (défaut : $IMV_NAME, sinon « {DEFAULT_AGENT_NAME} ») ; le mot après « IMV - » "
+        "sert aussi à interpeller l'agent",
     )
     join.add_argument("--incident", help="Référence de l'incident (sinon : « imv démarrer <ID> » dans le chat)")
     join.add_argument(
@@ -48,6 +48,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--captions",
         action="store_true",
         help="Transcrire la voix en lisant les sous-titres en direct de Teams (prototype)",
+    )
+    join.add_argument(
+        "--captions-language",
+        choices=["fr", "en"],
+        help="Langue de la réunion : langue parlée des sous-titres (réglée pour toute la réunion) et langue "
+        "des messages de l'agent (défaut : sous-titres inchangés, messages en français)",
     )
     join.add_argument(
         "--avatar",
@@ -134,6 +140,7 @@ async def run_join(args: argparse.Namespace) -> int:
         managers=args.im or [n for n in [os.environ.get("IMV_IM", "")] if n.strip()],
         welcome=not args.no_welcome,
         captions=args.captions,
+        captions_language=args.captions_language,
         avatar=args.avatar,
         llm=args.llm,
         llm_model=args.llm_model,

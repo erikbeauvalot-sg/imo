@@ -6,7 +6,6 @@ from __future__ import annotations
 import asyncio
 import contextvars
 import logging
-import random
 import time
 from collections import deque
 from dataclasses import dataclass, field
@@ -23,14 +22,10 @@ from imo.storage import Store
 
 log = logging.getLogger("imo")
 
-# Nom tiré au hasard : plusieurs agents dans une même réunion restent distincts. Le préfixe
-# « IMV - » signale un robot ; des noms d'étoiles plutôt que des prénoms de vraies personnes.
-AGENT_NAMES = ("Altair", "Atlas", "Castor", "Deneb", "Lyra", "Nova", "Orion", "Rigel", "Sirius", "Vega")
+# Le préfixe « IMV - » signale un robot. « Oscar » (alphabet radio) se dit et se transcrit de la
+# même façon en français et en anglais : c'est aussi le mot qui interpelle l'agent.
+DEFAULT_AGENT_NAME = "IMV - Oscar"
 DEFAULT_CONTEXT = Path("contexte.md")
-
-
-def random_agent_name() -> str:
-    return f"IMV - {random.choice(AGENT_NAMES)}"
 
 
 def resolve_context_path(path: Path | None) -> Path | None:
@@ -43,11 +38,14 @@ def resolve_context_path(path: Path | None) -> Path | None:
 @dataclass
 class MeetingConfig:
     url: str
-    name: str | None = None  # None : nom tiré au hasard
+    name: str | None = None  # None : DEFAULT_AGENT_NAME
     incident: str | None = None
     managers: list[str] = field(default_factory=list)
     welcome: bool = True
     captions: bool = False
+    # « fr » ou « en » : langue parlée des sous-titres et langue des messages de l'agent ;
+    # None : sous-titres dans la langue de la réunion, messages en français.
+    captions_language: str | None = None
     avatar: str | None = None  # "robot" ou chemin d'une image ; None : caméra coupée
     llm: str | None = None
     llm_model: str | None = None
@@ -81,7 +79,7 @@ class MeetingRunner:
         self.config = config
         self.store = store
         self.sinks = sinks
-        self.name = config.name or random_agent_name()
+        self.name = config.name or DEFAULT_AGENT_NAME
         camera_video = None
         if config.avatar:
             camera_video = avatar_video(None if config.avatar == "robot" else Path(config.avatar), label=self.name)
@@ -102,6 +100,7 @@ class MeetingRunner:
             "managers": config.managers,
             "welcome": config.welcome,
             "captions": config.captions,
+            "captions_language": config.captions_language,
             "avatar": config.avatar,
             "llm": config.llm,
             "llm_model": config.llm_model,
@@ -177,6 +176,7 @@ class MeetingRunner:
                 context=self.context,
                 managers=config.managers,
                 on_close=self.stop,  # « imv clore » : quitte la réunion une fois le résumé publié
+                language=config.captions_language or "fr",
             )
             if config.incident:
                 agent.start_incident(config.incident)
@@ -185,6 +185,8 @@ class MeetingRunner:
             await session.read_chat(queue.put_nowait)
             # Sous-titres activés avant l'accueil, qui annonce alors la transcription de la voix.
             if config.captions and await session.enable_captions():
+                if config.captions_language:
+                    await session.set_spoken_language(config.captions_language)
                 await session.read_captions(queue.put_nowait)
                 agent.transcribing = True
             if config.welcome:

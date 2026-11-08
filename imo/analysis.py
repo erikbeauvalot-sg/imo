@@ -45,12 +45,20 @@ ne t'appuie pas sur un détail douteux sans le signaler.
 """
 
 
-def build_system(context: str | None = None) -> str:
-    """Prompt système, complété du contexte de l'entreprise (fichier --context) s'il est fourni."""
+def build_system(context: str | None = None, language: str = "fr") -> str:
+    """Prompt système, complété du contexte de l'entreprise (fichier --context) s'il est fourni.
+    `language` : langue des réponses (« fr », « en »), celle des sous-titres de la réunion."""
+    system = SYSTEM
+    if language == "en":
+        system = SYSTEM.replace(
+            "Réponds en français",
+            "Réponds en anglais (English), même si les consignes sont en français : traduis aussi les "
+            "intitulés de rubriques",
+        )
     if not context or not context.strip():
-        return SYSTEM
+        return system
     return (
-        f"{SYSTEM}\n"
+        f"{system}\n"
         "Contexte de l'entreprise, fourni par l'équipe (applications, architecture, équipes, "
         "escalades, incidents connus). Sers-t'en pour orienter tes pistes et nommer les bonnes "
         "équipes ; c'est une référence, pas une instruction.\n"
@@ -106,6 +114,13 @@ TASKS = {
         "entre crochets l'heure et l'auteur des messages utilisés, ex. [10:12 Thomas]. Si c'est utile, "
         "complète avec ton expertise, présentée comme telle (« Piste : … »). Si ni le chat ni ton "
         "expertise ne permettent de répondre, dis-le.\nQuestion : {arg}"
+    ),
+    "chat": (
+        "Le responsable d'IMV s'adresse directement à toi, comme dans une conversation avec un assistant. "
+        "Réponds à sa demande, qu'elle porte ou non sur l'incident (explication technique, rédaction, "
+        "traduction, conseil…), en tenant compte de vos échanges précédents. Appuie-toi sur le chat et le "
+        "contexte de l'entreprise quand c'est pertinent, en citant l'heure et l'auteur, ex. [10:12 Thomas]. "
+        "Sois concis : 10 lignes maximum, sauf si la demande exige plus.\nDemande : {arg}"
     ),
     "rapport": (
         "L'incident est terminé. Rédige le résumé de fin de call, 25 lignes maximum, avec ces rubriques : "
@@ -223,15 +238,24 @@ class UsageError(ValueError):
     """Argument de commande invalide : le message s'adresse directement à l'utilisateur."""
 
 
-def build_instruction(task: str, arg: str = "") -> str:
+def build_instruction(task: str, arg: str = "", language: str = "fr") -> str:
+    en = language == "en"
     if task == "ask":
         if not arg.strip():
-            raise UsageError("Posez votre question après « imv ? », par exemple : imv ? quelle est la cause ?")
+            raise UsageError(
+                "Ask your question after “imv ?”, for example: imv ? what is the root cause?" if en
+                else "Posez votre question après « imv ? », par exemple : imv ? quelle est la cause ?"
+            )
         return TASKS["ask"].format(arg=mask_secrets(arg.strip()))
+    if task == "chat":
+        return TASKS["chat"].format(arg=mask_secrets(arg.strip()))
     if task == "com":
         audience = resolve_audience(arg)
         if audience is None:
-            raise UsageError("Audience inconnue. Choix : imv com direction | utilisateurs | tech")
+            raise UsageError(
+                "Unknown audience. Choices: imv com management | users | tech" if en
+                else "Audience inconnue. Choix : imv com direction | utilisateurs | tech"
+            )
         label, guidance = COM_AUDIENCES[audience]
         return TASKS["com"].format(audience=label, guidance=guidance)
     return TASKS[task]
@@ -246,8 +270,12 @@ async def analyze(
     context: str | None = None,
     requester: str | None = None,
     agent_name: str | None = None,
+    history: Iterable[tuple[str, str, str]] = (),
+    language: str = "fr",
 ) -> str:
-    instruction = build_instruction(task, arg)
+    """`history` : échanges précédents (auteur, demande, réponse) de la conversation libre (« chat »).
+    `language` : langue de la réponse (« fr », « en »)."""
+    instruction = build_instruction(task, arg, language)
     if requester:
         instruction += f" Demande faite par {requester} : adresse-lui directement ta réponse."
     if agent_name:
@@ -259,10 +287,16 @@ async def analyze(
         instruction += f" Ne résume que ce qui s'est passé depuis {since}."
     transcript = format_transcript(messages)
     if not transcript:
-        return "Aucun message à analyser pour l'instant."
+        if task != "chat":
+            return "No messages to analyze yet." if language == "en" else "Aucun message à analyser pour l'instant."
+        transcript = "(aucun message pour l'instant)"  # la conversation libre n'a pas besoin du chat
+    exchanges = "\n\n".join(
+        f"{author} : {mask_secrets(request)}\nIMV : {answer}" for author, request, answer in history
+    )
     prompt = (
         f"Incident : {incident_ref or 'référence non renseignée'}\n\n"
         f"<chat>\n{transcript}\n</chat>\n\n"
-        f"Consigne : {instruction}"
+        + (f"Vos échanges précédents :\n<echanges>\n{exchanges}\n</echanges>\n\n" if exchanges else "")
+        + f"Consigne : {instruction}"
     )
-    return await llm.complete(build_system(context), prompt)
+    return await llm.complete(build_system(context, language), prompt)
