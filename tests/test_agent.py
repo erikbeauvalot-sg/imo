@@ -192,6 +192,31 @@ def test_agent_called_by_name_in_chat():
     assert "Symptômes, Impact" in prompts[1] and len(prompts) == 2
 
 
+@pytest.mark.parametrize(
+    "text, source",
+    [("Oscar, bonjour", "chat"), ("IMV, bonjour", "chat"), ("Oscar, salut", "chat"), ("Oscar, hello", "transcript")],
+)
+def test_first_person_greeting_starts_a_conversation(text, source):
+    """Sans responsable désigné, la première personne qui interpelle l'agent le devient : sa
+    demande libre part déjà en conversation avec le LLM, pas en « commande inconnue »."""
+    async def scenario():
+        llm = FakeLLM()
+        store = Store(":memory:")
+        sid = store.create_session("https://teams.microsoft.com/meet/1", "IMV - Oscar")
+        chat = FakeChat(True)
+        agent = IncidentAgent(store, sid, "IMV - Oscar", chat.send, llm=llm, context="DBA : dba-oncall", language="en")
+        await agent.handle(_msg("Erik", text, "m1", source=source))
+        await agent.wait_analyses()
+        return chat.sent, llm, agent
+
+    sent, llm, agent = asyncio.run(scenario())
+    assert not any("Unknown command" in s for s in sent)
+    assert "Erik is the IMV manager" in sent[0] and list(agent.managers.values()) == ["Erik"]
+    assert sent[-1] == "Symptômes : erreurs 500"  # réponse du LLM
+    assert text.split(", ")[1] in llm.prompts[0].split("Demande :")[1]
+    assert "dba-oncall" in llm.systems[0]
+
+
 def test_english_meeting():
     async def scenario():
         llm = FakeLLM()

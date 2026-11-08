@@ -423,16 +423,22 @@ class IncidentAgent:
     def _known(self, verb: str) -> bool:
         return verb in TASKS or verb in _LATER or verb == "clore" or hasattr(self, f"_cmd_{verb}")
 
+    def _manager_or_first(self, author: str) -> bool:
+        """Responsable, ou première personne à s'adresser à l'agent sans responsable désigné :
+        _authorize la désigne alors responsable, sa demande doit déjà être traitée comme telle."""
+        return not self.managers or _name_key(author) in self.managers
+
     def _as_chat(self, command: Command, author: str) -> Command:
         """« imv <demande libre> » ou « imv ? … » d'un responsable → conversation libre. Une faute de
         frappe sur une commande (« imv resmué », « imv demarer INC1 ») garde sa suggestion."""
-        if self.llm is None or _name_key(author) not in self.managers:
+        if self.llm is None or not self._manager_or_first(author):
             return command
         if command.verb == "ask":
             return Command("chat", "?", command.arg) if command.arg.strip() else command
         if self._known(command.verb):
             return command
-        typo = difflib.get_close_matches(command.verb, [*_ALIASES, *TASKS, *_LATER], n=1, cutoff=0.6)
+        # Seuil plus strict que la suggestion : « salut » ne doit pas passer pour « statut ».
+        typo = difflib.get_close_matches(command.verb, [*_ALIASES, *TASKS, *_LATER], n=1, cutoff=0.8)
         if typo and len(command.arg.split()) <= 1:
             return command
         return Command("chat", "?", f"{command.word} {command.arg}".strip())
@@ -558,7 +564,7 @@ class IncidentAgent:
                     f"Say for example “{self.name}, a summary” or type “imv help”.",
                 ))
                 return True
-            if key in self.managers:
+            if self._manager_or_first(msg.sender):
                 command = Command("chat", "?", heard)  # conversation libre du responsable
             else:
                 command = Command("ask", "?", heard)  # question libre
