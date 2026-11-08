@@ -112,9 +112,11 @@ class MeetingRunner:
         self.events: deque[str] = deque(maxlen=200)  # journal propre à cette réunion
         self.agent: IncidentAgent | None = None
         self._stop = asyncio.Event()
+        self._stop_reason: str | None = None  # code enregistré en base (ex. server_shutdown)
 
-    def stop(self) -> None:
+    def stop(self, reason: str | None = None) -> None:
         """Quitte la réunion (si elle est rejointe) et termine run()."""
+        self._stop_reason = self._stop_reason or reason
         self._stop.set()
 
     def _set_status(self, status: str, error_code: str | None = None) -> None:
@@ -131,7 +133,7 @@ class MeetingRunner:
         try:
             return await self._run()
         except asyncio.CancelledError:
-            self._set_status("ended")
+            self._set_status("ended", self._stop_reason or "cancelled")
             raise
         except Exception as exc:  # noqa: BLE001 — navigateur absent, plantage : la réunion est en échec
             self.error = str(exc)
@@ -150,7 +152,7 @@ class MeetingRunner:
             if not join.done():  # arrêt demandé en salle d'attente
                 join.cancel()
                 log.info("Arrêt demandé avant l'admission")
-                self._set_status("ended")
+                self._set_status("ended", self._stop_reason)
                 return 0
             stopped.cancel()
             try:
@@ -196,19 +198,27 @@ class MeetingRunner:
 
             ended = asyncio.create_task(session.wait_until_ended())
             stopped = asyncio.create_task(self._stop.wait())
-            done, pending = await asyncio.wait({ended, stopped}, return_when=asyncio.FIRST_COMPLETED)
+            try:
+                done, pending = await asyncio.wait({ended, stopped}, return_when=asyncio.FIRST_COMPLETED)
+            except asyncio.CancelledError:
+                # Tâche annulée (arrêt brutal) : quitter quand même, sinon Teams garde un participant
+                # fantôme plusieurs minutes après la fermeture du navigateur.
+                await _quietly(session.leave(), 5)
+                raise
             for task in (*pending, *snapshot_tasks):
                 task.cancel()
-            # Prototype : HTML du chat conservé pour ajuster les sélecteurs (contient les messages).
-            await session.snapshot("chat-end")
             if ended in done:
                 log.info("Fin de session : %s", ended.result())
+                await _quietly(session.snapshot("chat-end"), 10)
             else:
+                # Quitter d'abord : la capture de diagnostic (lente sur un vrai Teams) ne doit pas
+                # retarder le départ, ni l'empêcher si l'arrêt du serveur est pressé.
+                await _quietly(session.snapshot("chat-end"), 5)
                 await session.leave()
             worker.cancel()
             while not queue.empty():
                 await agent.handle(queue.get_nowait())
-            self._set_status("ended")
+            self._set_status("ended", self._stop_reason)
             log.info("Messages enregistrés : %s (session %s)", store.count_messages(self.session_id), self.session_id)
         return 0
 
@@ -216,6 +226,14 @@ class MeetingRunner:
         await self.session.join(admission_timeout=self.config.admission_timeout)
         self._set_status("in_meeting")
         await self.session.open_chat()
+
+
+async def _quietly(coro, timeout: float) -> None:
+    """Étape facultative de fin de session : bornée dans le temps, erreurs ignorées."""
+    try:
+        await asyncio.wait_for(coro, timeout)
+    except Exception:  # noqa: BLE001 — y compris TimeoutError
+        pass
 
 
 class _FirstMessageSink:

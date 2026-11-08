@@ -119,6 +119,14 @@ const when = (iso) => {
   const time = d.toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" });
   return d.toDateString() === new Date().toDateString() ? time : `${d.toLocaleDateString("fr-FR", { day: "2-digit", month: "2-digit" })} ${time}`;
 };
+// Explication d'une fin de session (codes d'erreur de la base).
+const NOTES = {
+  server_shutdown: "Arrêtée par l'arrêt du serveur : l'agent a quitté la réunion. « Relancer » pour l'y renvoyer.",
+  cancelled: "Arrêtée brutalement : l'agent n'est plus dans la réunion (Teams peut l'afficher encore quelques minutes).",
+};
+const note = (m) => m.status === "interrupted"
+  ? "Le serveur s'est arrêté sans clore la session : l'agent n'est plus dans la réunion (Teams peut l'afficher encore quelques minutes). « Relancer » pour l'y renvoyer."
+  : NOTES[m.error] || m.error;
 const statusLabel = (m) => m.stopping ? "Arrêt…" : STATUS[m.status] || m.status;
 
 async function api(path, options = {}) {
@@ -218,10 +226,12 @@ function renderDetail(data) {
     <div class="row" style="margin-top:0">
       <h2 style="margin:0">#${m.id} ${esc(m.name)} — <span class="status s-${esc(m.status)}">${esc(statusLabel(m))}</span></h2>
       ${m.live ? `<button class="secondary" id="stop"${active ? "" : " disabled"}>Quitter la réunion</button>`
-        : `<button id="restart" title="Nouvelle session avec le même lien, le même nom et les mêmes options">Relancer</button>`}
+        : m.restartable
+          ? `<button id="restart" title="Nouvelle session avec le même lien, le même nom et les mêmes options">Relancer</button>`
+          : `<button id="prefill" title="Session antérieure à l'enregistrement des options : lien et nom repris dans le formulaire, options à choisir">Reprendre dans le formulaire</button>`}
     </div>
     <div class="url hint">${esc(m.url)}</div>
-    ${m.error ? `<div class="error">${esc(m.error)}</div>` : ""}
+    ${note(m) ? `<div class="error">${esc(note(m))}</div>` : ""}
     <div class="chips">${chips.map((c) => `<span class="chip">${esc(c)}</span>`).join("")}</div>
     <div class="feed" id="feed">${data.feed.length ? data.feed.map((f) => `
       <div class="msg ${esc(f.kind)}"><span class="meta">${esc(hour(f.time))}</span><span class="who">${esc(f.author)}${f.kind === "transcript" ? " (oral)" : ""}${f.kind.startsWith("manual") ? " (depuis l'interface)" : ""}${f.kind.endsWith("-undelivered") ? " (non publié)" : ""}</span>${esc(f.text)}</div>`).join("")
@@ -238,6 +248,12 @@ function renderDetail(data) {
       $("restart").disabled = false;
       $("action-error").textContent = `Relance impossible : ${err.message}`;
     }
+  };
+  if ($("prefill")) $("prefill").onclick = () => {
+    $("url").value = m.url;
+    $("name").value = m.name;
+    $("form").scrollIntoView({ behavior: "smooth" });
+    $("captions").focus();
   };
   if ($("stop")) $("stop").onclick = async () => { $("stop").disabled = true; await api(`/api/meetings/${m.id}`, { method: "DELETE" }); refresh(); };
   scroll.feed();

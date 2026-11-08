@@ -98,10 +98,10 @@ class Meetings:
         except Exception:  # noqa: BLE001 — déjà journalisé et marqué en échec par le runner
             pass
 
-    async def shutdown(self, timeout: float = 15) -> None:
+    async def shutdown(self, timeout: float = 30) -> None:
         """Arrêt du serveur : chaque agent quitte sa réunion proprement."""
         for runner in self.runners.values():
-            runner.stop()
+            runner.stop("server_shutdown")
         running = [t for t in self.tasks.values() if not t.done()]
         if running:
             log.info("Arrêt de %s agent(s)…", len(running))
@@ -182,6 +182,8 @@ def create_app(db: Path | str, defaults: MeetingConfig, allowed_hosts: list[str]
         row = session_or_404(session_id)
         data = describe(row, meetings.runners.get(session_id), meetings.tasks.get(session_id))
         data["messages"] = meetings.store.count_messages(session_id)
+        # Sessions créées avant l'enregistrement des options : relance impossible à l'identique
+        data["restartable"] = meetings.store.session_options(session_id) is not None
         return data
 
     def live_runner(session_id: int) -> MeetingRunner:

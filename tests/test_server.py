@@ -147,8 +147,11 @@ def test_server_runs_several_meetings(fake_teams, tmp_path):
         assert client.delete(f"/api/meetings/{ids[0]}").status_code == 202
         _wait(client, ids[0], lambda d: d["meeting"]["status"] == "ended" and not d["meeting"]["stopping"])
         assert client.get(f"/api/meetings/{ids[1]}/feed").json()["meeting"]["status"] == "in_meeting"
-    # Arrêt du serveur : l'autre agent quitte aussi sa réunion
-    assert [s["status"] for s in Store(db).list_sessions()] == ["ended", "ended"]
+    # Arrêt du serveur : l'autre agent quitte aussi sa réunion, avec la raison enregistrée
+    assert [(s["status"], s["error_code"]) for s in Store(db).list_sessions()] == [
+        ("ended", None),
+        ("ended", "server_shutdown"),
+    ]
 
 
 def test_server_rejects_bad_requests():
@@ -233,7 +236,31 @@ def test_server_restarts_a_finished_session_with_the_same_options(fake_teams, tm
         assert data["meeting"]["captions"] is True
         assert Store(db).session_options(again["id"])["welcome"] is False
 
-        # Session sans options enregistrées : relancée avec son lien et son nom
+        assert client.get(f"/api/meetings/{first}/feed").json()["meeting"]["restartable"] is True
+        assert client.get(f"/api/meetings/{old}/feed").json()["meeting"]["restartable"] is False
+        # Session sans options enregistrées : l'API la relance avec son lien et son nom
         r = client.post(f"/api/meetings/{old}/restart")
         assert r.status_code == 201 and r.json()["name"] == "IMV - Vieux"
         assert client.post("/api/meetings/999/restart").status_code == 404
+
+
+def test_cancelled_runner_still_leaves_the_meeting(fake_teams, caplog):
+    caplog.set_level(logging.INFO, logger="imo")
+
+    async def scenario():
+        runner = MeetingRunner(_config(welcome=False), Store(":memory:"))
+        task = asyncio.create_task(runner.run())
+        deadline = time.monotonic() + 15
+        while runner.status != "in_meeting" or runner.agent is None:
+            assert time.monotonic() < deadline
+            await asyncio.sleep(0.1)
+        await asyncio.sleep(0.5)
+        task.cancel()  # arrêt brutal, sans stop()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        return runner
+
+    runner = asyncio.run(scenario())
+    assert runner.status == "ended"
+    assert runner.store.session(runner.session_id)["error_code"] == "cancelled"
+    assert "Réunion quittée" in caplog.text  # bouton Leave cliqué avant la fermeture du navigateur

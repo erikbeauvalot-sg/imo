@@ -138,7 +138,7 @@ La page permet de lancer un agent dans une réunion (lien, nom, responsables, in
 
 - Options : `--port` (défaut 8765), `--llm`/`--llm-model` (fournisseur proposé par défaut dans la page), `--context`, `--browser`, `--show`, `--admission-timeout`, `--debug-dir` (un sous-dossier `session-<n>` par réunion), `-v`.
 - Le serveur n'écoute que `127.0.0.1` et n'a pas d'authentification : il est réservé à votre poste.
-- Ctrl+C arrête le serveur ; chaque agent quitte alors sa réunion.
+- Les agents tournent dans le processus du serveur : **arrêter ou redémarrer le serveur termine leurs sessions**. Ctrl+C fait quitter proprement la réunion à chaque agent (session « Terminée », arrêtée par le serveur) ; il suffit ensuite de cliquer « Relancer ». Après un arrêt brutal (processus tué, double Ctrl+C), Teams peut afficher l'agent encore quelques minutes. Les sessions créées avant l'enregistrement des options proposent « Reprendre dans le formulaire » au lieu de « Relancer ».
 - Comptez environ 300 à 500 Mo de mémoire par réunion.
 - API JSON, utilisable depuis un script : `POST /api/meetings` (`{"url": "...", "name": "...", "im": ["..."], "captions": true}`), `GET /api/meetings` (historique compris), `GET /api/meetings/<id>/feed`, `POST /api/meetings/<id>/chat` (`{"text": "..."}`), `POST /api/meetings/<id>/restart`, `DELETE /api/meetings/<id>`.
 
