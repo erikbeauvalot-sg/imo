@@ -42,12 +42,13 @@ Options : `--captions` (transcription de la voix, voir ci-dessous), `--context F
 
 ### Voix : sous-titres en direct (prototype)
 
-Avec `--captions`, l'agent active les **sous-titres en direct de Teams** (menu « More » → « Language and speech » → « Turn on live captions ») et lit le texte affiché : chaque phrase est enregistrée avec le nom de la personne qui parle, comme un message `transcript`. Teams fait la transcription : aucun flux audio n'est traité par l'agent et la voix ne part vers aucun service supplémentaire.
+Avec `--captions`, l'agent active les **sous-titres en direct de Teams** (menu « More » → « Captions » pour un invité, ou « Language and speech » → « Turn on live captions ») et lit le texte affiché : chaque phrase est enregistrée avec le nom de la personne qui parle, comme un message `transcript`. Teams fait la transcription : aucun flux audio n'est traité par l'agent et la voix ne part vers aucun service supplémentaire.
 
 - Les phrases s'affichent dans la console avec la mention « (oral) », et les analyses (`imv résumé`, `imv pistes`…) en tiennent compte en les distinguant du chat écrit.
-- Le message d'accueil annonce la transcription ; `imv pause` la suspend aussi. Une commande `imv` prononcée à l'oral n'est jamais exécutée.
+- Le message d'accueil annonce la transcription ; `imv pause` la suspend aussi.
+- **Commandes vocales** : l'agent n'agit sur ce qui est dit que s'il est interpellé, par « IMV » ou par son nom d'étoile : « IMV, give me a summary please », « Nova, quelles sont les pistes ? ». L'appel peut être seul sur une ligne (« IMV. »), la demande dans la phrase suivante (15 s maximum). Les sous-titres écrivent souvent « IMV » en « MV » : c'est reconnu. La demande est convertie en commande (résumé, catchup, pistes, questions, timeline, actions, com, rapport, clore, pause, aide) ; sinon, avec `--llm`, elle est traitée comme une question libre (`imv ?`). L'agent répond dans le chat, en rappelant la phrase comprise. Les droits sont les mêmes qu'à l'écrit (le nom de l'orateur vient de Teams) ; `autoriser` et `retirer` ne se disent pas à l'oral, et en pause l'agent n'écoute plus (`imv reprise` se tape dans le chat).
 - Si les sous-titres ne peuvent pas être activés (option absente pour les invités, interface différente), l'agent continue avec le chat seul et le signale dans la console.
-- **Prototype** : les sélecteurs de l'interface viennent de sources publiques et doivent être confirmés sur le vrai Teams. Chaque étape est capturée dans `debug/` (`captions-menu`, `captions-on`, `captions`, `captions-failed`) : envoyez ces fichiers pour ajuster la lecture. La langue parlée des sous-titres doit être réglée sur le français dans la réunion.
+- **Prototype** : les sélecteurs de l'interface viennent de sources publiques et doivent être confirmés sur le vrai Teams. Chaque étape est capturée dans `debug/` (`captions-menu`, `captions-on`, `captions`, `captions-failed`) : envoyez ces fichiers pour ajuster la lecture. La langue parlée des sous-titres doit correspondre à celle de la réunion (réglage « Spoken language » de Teams) : une phrase en français transcrite en anglais devient inexploitable.
 - Transcrire la voix est un traitement de données personnelles : à valider avec le RSSI (et le CSE) avant tout usage réel.
 
 ```bash
@@ -133,13 +134,13 @@ d'authentification. Vérifier ensuite avec
 .venv/bin/python imo_agent.py serve --llm azure-openai    # puis ouvrir http://127.0.0.1:8765
 ```
 
-La page permet de lancer un agent dans une réunion (lien, nom, responsables, incident, LLM, transcription de la voix, avatar), de suivre chaque réunion en direct (messages du chat, phrases dites à l'oral, réponses d'IMV, journal de l'agent), d'**écrire dans le chat de la réunion** au nom de l'agent et de faire quitter la réunion à un agent. L'**historique** des sessions (y compris celles lancées avec `join`) reste consultable après un redémarrage du serveur : il est lu dans la base. Une session restée ouverte lors d'un arrêt brutal apparaît comme « Interrompue » ; le journal de l'agent n'est disponible que pendant la session. Chaque agent a son propre navigateur, caché ; tous partagent la même base (`--db`) et le même `contexte.md`.
+La page permet de lancer un agent dans une réunion (lien, nom, responsables, incident, LLM, transcription de la voix, avatar), de suivre chaque réunion en direct (messages du chat, phrases dites à l'oral, réponses d'IMV, journal de l'agent), d'**écrire dans le chat de la réunion** au nom de l'agent, de faire quitter la réunion à un agent, et de **relancer** une session terminée (nouvelle session avec le même lien, le même nom et les mêmes options). L'**historique** des sessions (y compris celles lancées avec `join`) reste consultable après un redémarrage du serveur : il est lu dans la base. Une session restée ouverte lors d'un arrêt brutal apparaît comme « Interrompue » ; le journal de l'agent n'est disponible que pendant la session. Chaque agent a son propre navigateur, caché ; tous partagent la même base (`--db`) et le même `contexte.md`.
 
 - Options : `--port` (défaut 8765), `--llm`/`--llm-model` (fournisseur proposé par défaut dans la page), `--context`, `--browser`, `--show`, `--admission-timeout`, `--debug-dir` (un sous-dossier `session-<n>` par réunion), `-v`.
 - Le serveur n'écoute que `127.0.0.1` et n'a pas d'authentification : il est réservé à votre poste.
 - Ctrl+C arrête le serveur ; chaque agent quitte alors sa réunion.
 - Comptez environ 300 à 500 Mo de mémoire par réunion.
-- API JSON, utilisable depuis un script : `POST /api/meetings` (`{"url": "...", "name": "...", "im": ["..."], "captions": true}`), `GET /api/meetings` (historique compris), `GET /api/meetings/<id>/feed`, `POST /api/meetings/<id>/chat` (`{"text": "..."}`), `DELETE /api/meetings/<id>`.
+- API JSON, utilisable depuis un script : `POST /api/meetings` (`{"url": "...", "name": "...", "im": ["..."], "captions": true}`), `GET /api/meetings` (historique compris), `GET /api/meetings/<id>/feed`, `POST /api/meetings/<id>/chat` (`{"text": "..."}`), `POST /api/meetings/<id>/restart`, `DELETE /api/meetings/<id>`.
 
 ### Historique
 

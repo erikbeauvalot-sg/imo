@@ -208,3 +208,32 @@ def test_server_keeps_history_across_restarts(tmp_path):
         assert data["meeting"]["messages"] == 1 and data["events"] == []
         assert client.delete(f"/api/meetings/{done}").status_code == 409
         assert client.post(f"/api/meetings/{done}/chat", json={"text": "x"}).status_code == 409
+
+
+def test_server_restarts_a_finished_session_with_the_same_options(fake_teams, tmp_path):
+    db = tmp_path / "imv.db"
+    old = Store(db).create_session(MEETING_URL, "IMV - Vieux")  # session antérieure aux options
+    with _client(db) as client:
+        first = client.post("/api/meetings", json={
+            "url": MEETING_URL, "name": "IMV - Lyra", "im": ["Bob Durand"], "incident": "INC9",
+            "captions": True, "welcome": False,
+        }).json()["id"]
+        _wait(client, first, lambda d: d["meeting"]["status"] == "in_meeting")
+        assert client.post(f"/api/meetings/{first}/restart").status_code == 409  # encore en réunion
+        client.delete(f"/api/meetings/{first}")
+        _wait(client, first, lambda d: not d["meeting"]["live"])
+
+        r = client.post(f"/api/meetings/{first}/restart")
+        assert r.status_code == 201, r.text
+        again = r.json()
+        assert again["id"] != first and (again["name"], again["url"]) == ("IMV - Lyra", MEETING_URL)
+        # L'incident est démarré dès l'arrivée de l'agent dans le chat
+        data = _wait(client, again["id"], lambda d: d["meeting"]["incident"] == "INC9")
+        assert data["meeting"]["managers"] == ["Bob Durand"]
+        assert data["meeting"]["captions"] is True
+        assert Store(db).session_options(again["id"])["welcome"] is False
+
+        # Session sans options enregistrées : relancée avec son lien et son nom
+        r = client.post(f"/api/meetings/{old}/restart")
+        assert r.status_code == 201 and r.json()["name"] == "IMV - Vieux"
+        assert client.post("/api/meetings/999/restart").status_code == 404

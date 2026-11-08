@@ -67,6 +67,22 @@ class Meetings:
         )
         if config.llm != self.defaults.llm:
             config.llm_model = None  # le modèle de --llm-model ne vaut que pour le fournisseur du serveur
+        return self._launch(config)
+
+    def restart(self, session_id: int) -> MeetingRunner:
+        """Nouvelle session avec le lien, le nom et les options d'une session passée."""
+        row = self.store.session(session_id)
+        options = self.store.session_options(session_id) or {}  # sessions anciennes : lien et nom seulement
+        known = {"incident", "managers", "welcome", "captions", "avatar", "llm", "llm_model"}
+        config = replace(
+            self.defaults,
+            url=row["meeting_url"],
+            name=row["display_name"],
+            **{k: v for k, v in options.items() if k in known},
+        )
+        return self._launch(config)
+
+    def _launch(self, config: MeetingConfig) -> MeetingRunner:
         runner = MeetingRunner(config, self.store)
         if self.defaults.debug_dir is not None:
             # Captures séparées par réunion : plusieurs agents écrivent en même temps.
@@ -203,6 +219,18 @@ def create_app(db: Path | str, defaults: MeetingConfig, allowed_hosts: list[str]
         try:
             runner = meetings.start(req)
         except (ValueError, LLMError) as exc:
+            raise HTTPException(400, str(exc)) from exc
+        return describe_id(runner.session_id)
+
+    @app.post("/api/meetings/{session_id}/restart", status_code=201)
+    async def restart_meeting(session_id: int) -> dict:
+        session_or_404(session_id)
+        task = meetings.tasks.get(session_id)
+        if task is not None and not task.done():
+            raise HTTPException(409, "l'agent de cette session est encore en réunion")
+        try:
+            runner = meetings.restart(session_id)
+        except (ValueError, LLMError, OSError) as exc:  # OSError : image d'avatar disparue
             raise HTTPException(400, str(exc)) from exc
         return describe_id(runner.session_id)
 

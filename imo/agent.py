@@ -44,7 +44,8 @@ HELP = (
     "imv autoriser <nom> | tous : autorise une personne, ou tout le monde, à utiliser IMV (responsable)\n"
     "imv retirer <nom> | tous : retire une autorisation, ou réserve de nouveau IMV aux autorisés (responsable)\n"
     "imv autorisés : personnes autorisées\n"
-    "imv aide : cette aide"
+    "imv aide : cette aide\n"
+    "À l'oral (si la voix est transcrite) : « IMV, fais un résumé », « IMV, quelles pistes ? »…"
 )
 
 # Formes canoniques (sans accents) des commandes de l'Étape 1.
@@ -136,6 +137,47 @@ def _plain(text: str) -> str:
     return " ".join(_strip_accents(text).lower().replace("’", "'").split())
 
 
+# Commandes vocales : l'agent n'agit sur ce qui est dit que s'il est interpellé, par « IMV » ou par
+# son nom (« Nova, un résumé »), éventuellement seul sur une ligne puis la demande dans la suivante.
+# Les sous-titres transcrivent souvent « IMV » en « MV » ou « I M V ».
+_WAKE_FILLERS = r"(?:(?:hey|hi|ok|okay|dis|eh|bon|alors|so|and|et)[\s,]+)?"
+_IMV_SPOKEN = r"i[\s.]?m[\s.]?v|mv"
+VOICE_FOLLOW_UP = 15  # secondes : demande attendue après un appel seul (« MV. »)
+
+# Demande orale → commande (texte sans accents ni majuscules), par ordre de priorité.
+# Pas d'autoriser / retirer à l'oral : les noms propres sont trop mal transcrits.
+_VOICE_INTENTS = [(re.compile(p), verb) for p, verb in [
+    (r"\b(close|clore|cloturer|cloture)\b", "clore"),
+    (r"\b(pause|stop recording|arrete d'enregistrer)\b", "pause"),
+    (r"\bcatch (me |us )?up\b|\bcatchup\b|\bmise a niveau\b|\brattrap", "catchup"),
+    (r"\btimeline\b|\bchronolog", "timeline"),
+    (r"\baction items?\b|\bactions\b|\bto ?do\b|\bqui fait quoi\b", "actions"),
+    (r"\b(what|which) questions\b|\bquestions? (to ask|a poser)\b|\bquelles questions\b", "questions"),
+    (r"\bhypothes|\bideas?\b|\bleads?\b|\bpistes?\b|\broot cause\b|\bsuggestions?\b", "pistes"),
+    (r"\b(final )?report\b|\brapport\b", "rapport"),
+    (r"\bcommunication\b|\bdraft\b|\bcom\b|\be-?mail\b", "com"),
+    (r"\bsumm(ary|ari[sz]e)\b|\bsum up\b|\brecap\b|\bresume\b|\bpoint de situation\b|\bwhere are we\b"
+     r"|\bou en est", "resume"),
+    (r"\bhelp\b|\baide\b", "aide"),
+]]
+_VOICE_AUDIENCES = [
+    (re.compile(r"\b(users?|utilisateurs?|clients?|customers?)\b"), "utilisateurs"),
+    (re.compile(r"\b(tech|technical|technique|techniques)\b"), "tech"),
+]
+
+
+def parse_voice_request(text: str) -> Command | None:
+    """« give me a summary please » → Command("resume", …) ; None si rien de reconnu."""
+    plain = _plain(text)
+    for pattern, verb in _VOICE_INTENTS:
+        if pattern.search(plain):
+            arg = ""
+            if verb == "com":  # audience direction par défaut
+                arg = next((a for p, a in _VOICE_AUDIENCES if p.search(plain)), "direction")
+            return Command(verb, _DISPLAY.get(verb, verb), arg)
+    return None
+
+
 class IncidentAgent:
     """Traite le flux de messages d'une session : enregistrement, commandes, réponses."""
 
@@ -178,13 +220,19 @@ class IncidentAgent:
         self.on_close = on_close
         self.closing = False
         self._close_proposed_at: float | None = None
+        # Appel vocal : « IMV » ou le nom propre de l'agent (« IMV - Nova » → « Nova »).
+        own = _plain(display_name.split(" - ")[-1])
+        names = _IMV_SPOKEN + (f"|{re.escape(own)}" if own and own != "imv" else "")
+        self._wake = re.compile(rf"^{_WAKE_FILLERS}(?:{names})\b[\s,.:;!?-]*(?P<rest>.*)$")
+        self._called_at: dict[str, float] = {}  # orateur → heure d'un appel seul, en attente de la demande
 
     async def welcome(self) -> bool:
         text = WELCOME
         if self.transcribing:
             text += (
                 "\nJe transcris aussi ce qui est dit à l'oral, à partir des sous-titres Teams ; "
-                "« imv pause » suspend aussi cette transcription."
+                "« imv pause » suspend aussi cette transcription. Pour me parler à l'oral, "
+                f"interpellez-moi : « IMV, un résumé s'il te plaît »{self._wake_hint()}."
             )
         if self.managers:
             text += (
@@ -212,8 +260,9 @@ class IncidentAgent:
             self.sink.write(msg)
         if msg.backlog or msg.source not in ("chat", "transcript"):
             return
-        if msg.source == "transcript":  # oral : jamais de commande, mais la fin d'incident compte
-            await self._propose_close_if_over(msg)
+        if msg.source == "transcript":
+            if not self.paused and not await self._voice_command(msg):
+                await self._propose_close_if_over(msg)
             return
         self._seen.setdefault(_name_key(msg.sender), msg.sender)
         command = parse_command(msg.text)
@@ -232,9 +281,14 @@ class IncidentAgent:
                 rule_id="secret_posted",
             )
 
-    async def execute(self, command: Command, author: str) -> None:
+    async def execute(self, command: Command, author: str, heard: str | None = None) -> None:
+        """`heard` : phrase dite à l'oral, rappelée dans le chat pour montrer ce qui a été compris."""
         if not await self._authorize(command, author):
             return
+        if heard is not None:
+            quote = heard if len(heard) <= 80 else heard[:77] + "…"
+            arg = f" {command.arg}" if command.arg and command.verb != "ask" else ""
+            await self.reply(f"{author} (à l'oral) : « {quote} » → imv {command.word}{arg}")
         if command.verb == "clore":
             self._background(self._close(author))
             return
@@ -328,6 +382,43 @@ class IncidentAgent:
         task = asyncio.create_task(coro)
         self._analyses.add(task)
         task.add_done_callback(self._analyses.discard)
+
+    # -- commandes vocales ------------------------------------------------
+
+    def _wake_hint(self) -> str:
+        own = self.display_name.split(" - ")[-1].strip()
+        return f" ou « {own}, … »" if own and _plain(own) != "imv" else ""
+
+    async def _voice_command(self, msg: ChatMessage) -> bool:
+        """Exécute une demande orale adressée à l'agent. True si la phrase lui était adressée."""
+        key, now = _name_key(msg.sender), asyncio.get_running_loop().time()
+        heard = msg.text.strip()
+        m = self._wake.match(_plain(heard))
+        if m is None:
+            called = self._called_at.pop(key, None)
+            if called is None or now - called > VOICE_FOLLOW_UP:
+                return False
+            request = heard  # demande dans la ligne qui suit l'appel
+        else:
+            self._called_at.pop(key, None)
+            request = m["rest"]
+            if not request.strip(" .,!?"):
+                self._called_at[key] = now
+                log.info("Appel vocal de %s : demande attendue", msg.sender)
+                return True
+        command = parse_voice_request(request)
+        if command is None:
+            if _INCIDENT_OVER.search(_plain(request)):
+                return False  # « IMV, l'incident est résolu » : proposition de clôture
+            if self.llm is None:
+                await self.reply(
+                    f"{msg.sender}, je n'ai pas compris « {heard} ». "
+                    "Dites par exemple « IMV, un résumé » ou tapez « imv aide »."
+                )
+                return True
+            command = Command("ask", "?", heard)  # question libre
+        await self.execute(command, msg.sender, heard=heard)
+        return True
 
     # -- clôture ----------------------------------------------------------
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from pathlib import Path
 
@@ -26,7 +27,8 @@ CREATE TABLE IF NOT EXISTS sessions (
     error_code   TEXT,
     created_at   TEXT NOT NULL,
     joined_at    TEXT,
-    ended_at     TEXT
+    ended_at     TEXT,
+    options      TEXT                    -- JSON : options de lancement, pour relancer la session
 );
 CREATE TABLE IF NOT EXISTS messages (
     id               INTEGER PRIMARY KEY,
@@ -61,20 +63,28 @@ class Store:
         self.db.row_factory = sqlite3.Row
         self.db.execute("PRAGMA foreign_keys = ON")
         self.db.executescript(SCHEMA)
+        # Bases créées avant l'ajout de la colonne options
+        if "options" not in {row["name"] for row in self.db.execute("PRAGMA table_info(sessions)")}:
+            self.db.execute("ALTER TABLE sessions ADD COLUMN options TEXT")
 
     def close(self) -> None:
         self.db.close()
 
     # -- sessions ---------------------------------------------------------
 
-    def create_session(self, meeting_url: str, display_name: str) -> int:
+    def create_session(self, meeting_url: str, display_name: str, options: dict | None = None) -> int:
         with self.db:
             cur = self.db.execute(
-                "INSERT INTO sessions (meeting_url, display_name, status, created_at) "
-                "VALUES (?, ?, 'joining', ?)",
-                (meeting_url, display_name, utc_now()),
+                "INSERT INTO sessions (meeting_url, display_name, status, created_at, options) "
+                "VALUES (?, ?, 'joining', ?, ?)",
+                (meeting_url, display_name, utc_now(), json.dumps(options) if options is not None else None),
             )
         return cur.lastrowid
+
+    def session_options(self, session_id: int) -> dict | None:
+        """Options de lancement enregistrées ; None pour une session antérieure à leur enregistrement."""
+        row = self.db.execute("SELECT options FROM sessions WHERE id = ?", (session_id,)).fetchone()
+        return json.loads(row["options"]) if row and row["options"] else None
 
     def set_session_status(self, session_id: int, status: str, error_code: str | None = None) -> None:
         now = utc_now()

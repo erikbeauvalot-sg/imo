@@ -6,7 +6,7 @@ import asyncio
 
 import pytest
 
-from imo.agent import HELP, WELCOME, Command, IncidentAgent, parse_command
+from imo.agent import parse_voice_request, HELP, WELCOME, Command, IncidentAgent, parse_command
 from imo.llm import LLMError
 from imo.models import ChatMessage
 from imo.storage import Store
@@ -364,21 +364,90 @@ def test_guest_with_same_name_is_not_the_manager():
     assert sent[3].startswith("Ma peut maintenant")
 
 
-def test_spoken_words_are_recorded_but_never_run_as_commands():
+def test_spoken_words_run_only_when_the_agent_is_called():
     async def scenario():
         agent, chat, store, sid = _agent()
         agent.transcribing = True
         await agent.welcome()
-        await agent.handle(_msg("Bob", "imv pause", source="transcript"))
-        await agent.handle(_msg("Bob", "imv pause", "m1"))
+        # Phrase non adressée à l'agent : enregistrée, rien d'exécuté
+        await agent.handle(_msg("Bob", "on fait une pause ?", source="transcript"))
         await agent.handle(_msg("Alice", "on bascule sur le site de secours", source="transcript"))
+        assert not agent.paused and len(chat.sent) == 1
+        await agent.handle(_msg("Bob", "IMV, pause s'il te plaît.", source="transcript"))
+        await agent.handle(_msg("Bob", "IMV, reprise", source="transcript"))  # en pause : n'écoute plus
         return agent, chat.sent, store, sid
 
     agent, sent, store, sid = asyncio.run(scenario())
     assert "Je transcris aussi ce qui est dit à l'oral" in sent[0]
-    # « imv pause » prononcé : enregistré, pas exécuté ; tapé dans le chat : exécuté
-    assert [(m["source"], m["text"]) for m in store.messages(sid)] == [("transcript", "imv pause"), ("chat", "imv pause")]
-    assert agent.paused is True and len(sent) == 2
+    assert "« IMV, un résumé s'il te plaît » ou « Assistant IM, … »" in sent[0]
+    assert sent[1] == "Bob (à l'oral) : « IMV, pause s'il te plaît. » → imv pause"
+    assert agent.paused is True
+    # La demande de pause est enregistrée, pas ce qui est dit ensuite ; la reprise se tape dans le chat
+    assert [m["text"] for m in store.messages(sid)][-1] == "IMV, pause s'il te plaît."
+    assert sent[2].startswith("Enregistrement du chat en pause") and len(sent) == 3
+
+
+@pytest.mark.parametrize(
+    "lines, verb",
+    [
+        (["IMV, give me a summary please."], "Symptômes"),  # analyse lancée
+        (["MV.", "Provide me a summary of the incident."], "Symptômes"),  # appel seul, puis la demande
+        (["Hey Nova, what are the leads?"], "Symptômes"),
+        (["Nova.", "Give me a summary please."], "Symptômes"),
+    ],
+)
+def test_voice_commands(lines, verb):
+    async def scenario():
+        llm = FakeLLM()
+        store = Store(":memory:")
+        sid = store.create_session("https://teams.microsoft.com/meet/1", "IMV - Nova")
+        chat = FakeChat(True)
+        agent = IncidentAgent(store, sid, "IMV - Nova", chat.send, llm=llm, managers=["Bob"])
+        await agent.handle(_msg("Alice", "Erreurs 500 sur le paiement", "m1"))
+        for line in lines:
+            await agent.handle(_msg("Bob", line, source="transcript"))
+        await agent.wait_analyses()
+        return chat.sent, llm
+
+    sent, llm = asyncio.run(scenario())
+    assert sent[0].startswith(f"Bob (à l'oral) : « {lines[-1] if len(lines) > 1 else lines[0]} » → imv ")
+    assert sent[1].startswith(verb) and len(llm.prompts) == 1
+
+
+def test_voice_requests_parsing_and_rights():
+    async def scenario():
+        agent, chat, _, _ = _agent(llm=FakeLLM())
+        # Appel suivi trop tard : la phrase n'est plus prise pour une demande
+        await agent.handle(_msg("Bob", "IMV.", source="transcript"))
+        agent._called_at["bob"] -= 60
+        await agent.handle(_msg("Bob", "give me a summary", source="transcript"))
+        assert chat.sent == []
+        # Question libre → imv ?
+        await agent.handle(_msg("Bob", "IMV, when did the errors start?", source="transcript"))
+        # Alice n'est pas autorisée
+        await agent.handle(_msg("Alice", "IMV, close the incident", source="transcript"))
+        await agent.wait_analyses()
+        return chat.sent
+
+    sent = asyncio.run(scenario())
+    assert sent[0] == "Bob (à l'oral) : « IMV, when did the errors start? » → imv ?"
+    assert "Alice, « imv clore » est réservé aux responsables" in sent[1] or "réservé" in sent[2]
+
+
+@pytest.mark.parametrize(
+    "text, verb, arg",
+    [
+        ("Give me a summary please.", "resume", ""),
+        ("catch me up", "catchup", ""),
+        ("what is the root cause?", "pistes", ""),
+        ("draft a communication for users", "com", "utilisateurs"),
+        ("could you close the incident", "clore", ""),
+        ("the website does not work", None, None),
+    ],
+)
+def test_parse_voice_request(text, verb, arg):
+    command = parse_voice_request(text)
+    assert (command.verb, command.arg) == (verb, arg) if verb else command is None
 
 
 def _closing_agent(llm=None):

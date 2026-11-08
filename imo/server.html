@@ -96,6 +96,7 @@
     </section>
   </div>
   <section id="detail">
+    <div class="error" id="action-error"></div>
     <div id="detail-body"><div class="empty">Sélectionnez une réunion.</div></div>
     <!-- Hors de detail-body : le texte en cours de saisie survit au rafraîchissement. -->
     <form id="compose">
@@ -172,7 +173,7 @@ function renderList(meetings) {
       <div class="url">${esc(m.incident ? m.incident + " · " : "")}${esc(m.url)}</div>
     </div>`).join("");
   for (const el of $("list").querySelectorAll(".item")) {
-    el.onclick = () => { selected = Number(el.dataset.id); $("detail-body").innerHTML = ""; lastRendered = ""; refresh(); };
+    el.onclick = () => { selected = Number(el.dataset.id); $("detail-body").innerHTML = ""; $("action-error").textContent = ""; lastRendered = ""; refresh(); };
   }
 }
 
@@ -216,7 +217,8 @@ function renderDetail(data) {
   $("detail-body").innerHTML = `
     <div class="row" style="margin-top:0">
       <h2 style="margin:0">#${m.id} ${esc(m.name)} — <span class="status s-${esc(m.status)}">${esc(statusLabel(m))}</span></h2>
-      ${m.live ? `<button class="secondary" id="stop"${active ? "" : " disabled"}>Quitter la réunion</button>` : ""}
+      ${m.live ? `<button class="secondary" id="stop"${active ? "" : " disabled"}>Quitter la réunion</button>`
+        : `<button id="restart" title="Nouvelle session avec le même lien, le même nom et les mêmes options">Relancer</button>`}
     </div>
     <div class="url hint">${esc(m.url)}</div>
     ${m.error ? `<div class="error">${esc(m.error)}</div>` : ""}
@@ -225,6 +227,18 @@ function renderDetail(data) {
       <div class="msg ${esc(f.kind)}"><span class="meta">${esc(hour(f.time))}</span><span class="who">${esc(f.author)}${f.kind === "transcript" ? " (oral)" : ""}${f.kind.startsWith("manual") ? " (depuis l'interface)" : ""}${f.kind.endsWith("-undelivered") ? " (non publié)" : ""}</span>${esc(f.text)}</div>`).join("")
       : `<div class="empty">Pas encore de message.</div>`}</div>
     <details id="events-box"${openEvents ? " open" : ""}><summary>Journal de l'agent</summary><pre class="events" id="events">${esc(data.events.join("\n")) || (m.live ? "—" : "Journal disponible seulement pendant la session.")}</pre></details>`;
+  if ($("restart")) $("restart").onclick = async () => {
+    $("restart").disabled = true;
+    try {
+      const created = await api(`/api/meetings/${m.id}/restart`, { method: "POST" });
+      selected = created.id;
+      lastRendered = "";
+      await refresh();
+    } catch (err) {
+      $("restart").disabled = false;
+      $("action-error").textContent = `Relance impossible : ${err.message}`;
+    }
+  };
   if ($("stop")) $("stop").onclick = async () => { $("stop").disabled = true; await api(`/api/meetings/${m.id}`, { method: "DELETE" }); refresh(); };
   scroll.feed();
   scroll.events();

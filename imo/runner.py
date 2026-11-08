@@ -96,7 +96,17 @@ class MeetingRunner:
         self.llm = make_llm(config.llm, config.llm_model) if config.llm else None
         self.context_path = resolve_context_path(config.context)
         self.context = load_context(self.context_path) if self.llm else None
-        self.session_id = store.create_session(self.session.url, self.session.display_name)
+        # Options gardées en base : la session peut être relancée à l'identique depuis l'interface web.
+        options = {
+            "incident": config.incident,
+            "managers": config.managers,
+            "welcome": config.welcome,
+            "captions": config.captions,
+            "avatar": config.avatar,
+            "llm": config.llm,
+            "llm_model": config.llm_model,
+        }
+        self.session_id = store.create_session(self.session.url, self.session.display_name, options)
         self.status = "joining"  # joining | in_meeting | ended | failed (comme la base)
         self.error: str | None = None
         self.events: deque[str] = deque(maxlen=200)  # journal propre à cette réunion
