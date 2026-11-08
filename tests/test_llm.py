@@ -298,3 +298,85 @@ def test_transcript_lines_are_marked_oral():
     assert lines[0].endswith("Alice : Erreurs 500")
     assert lines[1].endswith("Bob (oral) : je redémarre le pod")
     assert "(oral)" in SYSTEM
+
+
+def _hermes_server(finish_reason: str = "stop", content: str = " Réponse de Hermes ", status: int = 200):
+    """Faux serveur de l'API Hermes (compatible OpenAI) ; renvoie (serveur, requêtes reçues)."""
+    received = {}
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):  # noqa: N802
+            received["path"] = self.path
+            received["authorization"] = self.headers.get("Authorization")
+            received["body"] = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            body = json.dumps(
+                {
+                    "id": "x", "object": "chat.completion", "created": 0, "model": "oscar",
+                    "choices": [{"index": 0, "finish_reason": finish_reason,
+                                 "message": {"role": "assistant", "content": content}}],
+                } if status == 200 else {"error": {"message": "invalid api key"}}
+            ).encode()
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    server = HTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server, received
+
+
+def test_hermes(monkeypatch):
+    server, received = _hermes_server()
+    monkeypatch.setenv("HERMES_API_URL", f"http://127.0.0.1:{server.server_port}/p/oscar/v1")
+    monkeypatch.setenv("HERMES_API_KEY", "cle-oscar")
+    monkeypatch.delenv("HERMES_MODEL", raising=False)
+    try:
+        llm = make_llm("hermes")
+        assert llm.name == "hermes:oscar"
+        assert asyncio.run(llm.complete("système", "question")) == "Réponse de Hermes"
+    finally:
+        server.shutdown()
+    assert received["path"] == "/p/oscar/v1/chat/completions"
+    assert received["authorization"] == "Bearer cle-oscar"
+    assert received["body"]["model"] == "oscar"
+    assert received["body"]["messages"] == [
+        {"role": "system", "content": "système"}, {"role": "user", "content": "question"}]
+
+
+@pytest.mark.parametrize(
+    ("finish_reason", "status", "error"),
+    [("error", 200, "tâche error"), ("cancelled", 200, "tâche cancelled"), ("stop", 401, "401")],
+)
+def test_hermes_errors(monkeypatch, finish_reason, status, error):
+    server, _ = _hermes_server(finish_reason, status=status)
+    monkeypatch.setenv("HERMES_API_URL", f"http://127.0.0.1:{server.server_port}/v1")
+    monkeypatch.setenv("HERMES_API_KEY", "cle")
+    try:
+        with pytest.raises(LLMError, match=error):
+            asyncio.run(make_llm("hermes").complete("s", "p"))
+    finally:
+        server.shutdown()
+
+
+def test_hermes_budget_exhausted_answer_is_kept(monkeypatch):
+    server, _ = _hermes_server("length", content="Réponse partielle")
+    monkeypatch.setenv("HERMES_API_URL", f"http://127.0.0.1:{server.server_port}/v1")
+    monkeypatch.setenv("HERMES_API_KEY", "cle")
+    try:
+        assert asyncio.run(make_llm("hermes").complete("s", "p")) == "Réponse partielle"
+    finally:
+        server.shutdown()
+
+
+def test_hermes_configuration_errors(monkeypatch):
+    monkeypatch.delenv("HERMES_API_KEY", raising=False)
+    with pytest.raises(LLMError, match="HERMES_API_KEY"):
+        make_llm("hermes")
+    monkeypatch.setenv("HERMES_API_KEY", "cle")
+    monkeypatch.setenv("HERMES_API_URL", "http://127.0.0.1:9/v1")
+    with pytest.raises(LLMError, match="injoignable"):
+        asyncio.run(make_llm("hermes").complete("s", "p"))

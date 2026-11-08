@@ -26,6 +26,9 @@ services:
       - --metrics.prometheus=true
       - --metrics.prometheus.manualrouting=true
       - --metrics.prometheus.addrouterslabels=true
+      # Services de l'hôte pour le conteneur IMV seul (ex. API de l'agent Hermes) : écoute sur la
+      # passerelle du réseau privé d'IMV, injoignable d'Internet ; routes : traefik/hermes-api.yml.example.
+      - --entrypoints.hote-imv.address=172.30.0.1:8642
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - ./letsencrypt:/letsencrypt
@@ -48,6 +51,8 @@ services:
       # En-têtes X-Forwarded-* de Traefik acceptés (schéma https : cookie Secure). Sans risque :
       # le conteneur n'est joignable que depuis le VPS (réseau Docker, aucun port publié).
       FORWARDED_ALLOW_IPS: "*"
+      # Agent Hermes du VPS (imv hermes <tâche>, LLM « hermes »), joint par Traefik ; clé : HERMES_API_KEY
+      HERMES_API_URL: ${HERMES_API_URL:-http://172.30.0.1:8642/p/oscar/v1}
     volumes:
       - ./data:/data  # base, captures, contexte.md (appartenant à l'uid 1001)
     shm_size: 1gb  # Chromium : un navigateur par réunion
@@ -73,3 +78,8 @@ services:
 
 networks:
   web:
+    # Sous-réseau fixe : sa passerelle (172.30.0.1) porte le point d'entrée Traefik « hote-imv »
+    ipam:
+      config:
+        - subnet: 172.30.0.0/24
+          gateway: 172.30.0.1

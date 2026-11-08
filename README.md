@@ -82,6 +82,7 @@ Un invité ne peut pas être @mentionné : les commandes commencent par `imv`.
 | `imv actions` | Actions identifiées, owners, statuts |
 | `imv com [direction\|utilisateurs\|tech]` | Brouillon de communication pour l'audience choisie |
 | `imv ? <question>` | Question libre : réponse tirée du chat, complétée si utile par des pistes |
+| `imv hermes <tâche>` | Confie la tâche à l'agent Hermes (recherche web, mémoire), avec le chat et le contexte de l'entreprise ; disponible dès que `HERMES_API_KEY` est défini, quel que soit le LLM des analyses |
 | `imv rapport` | Aperçu du résumé de fin, sans clore |
 | `imv clore` | Clôture (responsable uniquement) : publie le résumé de fin, marque l'incident clos et quitte la réunion |
 
@@ -117,6 +118,7 @@ Les commandes d'analyse demandent l'option `--llm` (voir ci-dessous). Si le chat
 | `azure-openai` | Réseau de la société : GPT sur Microsoft Foundry | `AZURE_FOUNDRY_ENDPOINT` (ou `AZURE_OPENAI_ENDPOINT`) + Entra ID ou `AZURE_OPENAI_API_KEY` | `OPENAI_MODEL` |
 | `anthropic` | API Anthropic directe | `ANTHROPIC_API_KEY` | `claude-opus-5-5` |
 | `ollama` | Modèle local, rien ne sort de la machine | Ollama lancé (`OLLAMA_HOST` si autre que `localhost:11434`) | `qwen3:14b` |
+| `hermes` | Agent [Hermes](https://hermes-agent.nousresearch.com) : son modèle et ses outils autorisés (recherche web, mémoire) ; plus lent | `HERMES_API_KEY` (clé `API_SERVER_KEY` d'un profil Hermes), `HERMES_API_URL` (défaut `http://127.0.0.1:8642/p/oscar/v1`) | nom du profil (`oscar`, `HERMES_MODEL`) |
 
 Les variables peuvent être dans l'environnement ou dans un fichier `.env` du répertoire courant (modèle : `.env.example` ; l'environnement est prioritaire). `python imo_agent.py check-llm --llm foundry` vérifie la connexion. `--llm-model` change le modèle. Les mots de passe et jetons repérés dans le chat sont masqués avant l'envoi au LLM. Avec `claude-cli`, le contenu du chat part vers votre compte Claude personnel : réservez-le à des réunions de test tant que le RSSI n'a pas validé.
 

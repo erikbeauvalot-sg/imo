@@ -50,6 +50,7 @@ HELP_EN = (
     "imv report: preview of the final summary\n"
     "imv close: close the incident, post the final summary and leave the meeting (manager)\n"
     "imv ? <question>: free question about the incident\n"
+    "imv hermes <task>: hand a task to the Hermes agent (web search…), with the chat as context\n"
     "imv status: agent status\n"
     "imv pause / imv continue: stop / resume recording the chat\n"
     "imv allow <name> | all: allow a person, or everyone, to use IMV (manager)\n"
@@ -75,6 +76,7 @@ HELP = (
     "imv rapport : aperçu du résumé de fin\n"
     "imv clore : clôture l'incident, publie le résumé de fin et quitte la réunion (responsable)\n"
     "imv ? <question> : question libre sur l'incident\n"
+    "imv hermes <tâche> : confie une tâche à l'agent Hermes (recherche web…), avec le chat en contexte\n"
     "imv statut : état de l'agent\n"
     "imv pause / imv reprise : suspend / reprend l'enregistrement du chat\n"
     "imv autoriser <nom> | tous : autorise une personne, ou tout le monde, à utiliser IMV (responsable)\n"
@@ -242,6 +244,7 @@ class IncidentAgent:
         *,
         sink: Sink | None = None,
         llm: LLM | None = None,
+        hermes: LLM | None = None,
         context: str | None = None,
         managers: Iterable[str] = (),
         on_close: Callable[[], None] | None = None,
@@ -255,6 +258,8 @@ class IncidentAgent:
         self.send = send
         self.sink = sink
         self.llm = llm
+        # Agent Hermes (fournisseur « hermes ») pour « imv hermes <tâche> », quel que soit le LLM des analyses.
+        self.hermes = hermes
         # Contexte de l'entreprise (fichier --context), transmis au LLM avec chaque analyse.
         self.context = context
         self.paused = False
@@ -389,12 +394,14 @@ class IncidentAgent:
             self._background(self._close(author))
             return
         if command.verb in TASKS:
-            if self.llm is None:
-                await self.reply(self._t(
-                    "L'analyse n'est pas activée pour cette session (option --llm).",
-                    "Analysis is not enabled for this session (--llm option).",
-                ))
+            if self._llm_for(command.verb) is None:
+                await self.reply(self._unavailable(command.verb))
                 return
+            if command.verb == "hermes" and command.arg.strip():
+                await self.reply(self._t(
+                    "Tâche confiée à Hermes : réponse dans quelques instants.",
+                    "Task handed to Hermes: answer in a few moments.",
+                ))
             self._background(self._analyze(command, author))
             return
         handler = getattr(self, f"_cmd_{command.verb}", None)
@@ -514,8 +521,11 @@ class IncidentAgent:
             self._background(self._close(requester))
             return command, self._t("Clôture en cours.", "Closing in progress."), True
         if command.verb in TASKS:
-            if self.llm is None:
-                raise ValueError("l'analyse n'est pas activée pour cette session (pas de LLM)")
+            if self._llm_for(command.verb) is None:
+                raise ValueError(
+                    "Hermes n'est pas configuré sur ce serveur (HERMES_API_KEY)" if command.verb == "hermes"
+                    else "l'analyse n'est pas activée pour cette session (pas de LLM)"
+                )
             text = await self._analysis_text(command, requester)
         else:
             text = getattr(self, f"_cmd_{command.verb}")(command.arg, requester)
@@ -524,12 +534,27 @@ class IncidentAgent:
     async def _analyze(self, command: Command, author: str) -> None:
         await self.reply(await self._analysis_text(command, author))
 
+    def _llm_for(self, verb: str) -> LLM | None:
+        return self.hermes if verb == "hermes" else self.llm
+
+    def _unavailable(self, verb: str) -> str:
+        if verb == "hermes":
+            return self._t(
+                "Hermes n'est pas configuré sur ce serveur (HERMES_API_KEY).",
+                "Hermes is not configured on this server (HERMES_API_KEY).",
+            )
+        return self._t(
+            "L'analyse n'est pas activée pour cette session (option --llm).",
+            "Analysis is not enabled for this session (--llm option).",
+        )
+
     async def _analysis_text(self, command: Command, author: str) -> str:
-        assert self.llm is not None
+        llm = self._llm_for(command.verb)
+        assert llm is not None
         incident = self.store.session_incident(self.session_id)
         try:
             text = await analyze(
-                self.llm,
+                llm,
                 command.verb,
                 self.store.messages(self.session_id),
                 incident["ref"] if incident else None,

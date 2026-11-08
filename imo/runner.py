@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 import contextvars
 import logging
+import os
 import time
 from collections import deque
 from dataclasses import dataclass, field
@@ -94,8 +95,13 @@ class MeetingRunner:
             browser=config.browser,
         )
         self.llm = make_llm(config.llm, config.llm_model) if config.llm else None
+        # Agent Hermes pour « imv hermes <tâche> » : disponible dès que HERMES_API_KEY est défini,
+        # quel que soit le LLM des analyses.
+        self.hermes = self.llm if config.llm == "hermes" else (
+            make_llm("hermes") if os.environ.get("HERMES_API_KEY") else None
+        )
         self.context_path = resolve_context_path(config.context)
-        self.context = load_context(self.context_path) if self.llm else None
+        self.context = load_context(self.context_path) if self.llm or self.hermes else None
         # Options gardées en base : la session peut être relancée à l'identique depuis l'interface web.
         options = {
             "incident": config.incident,
@@ -179,6 +185,7 @@ class MeetingRunner:
                 session.send_chat,
                 sink=MultiSink(*self.sinks, first_message, first_caption),
                 llm=self.llm,
+                hermes=self.hermes,
                 context=self.context,
                 managers=config.managers,
                 on_close=self.stop,  # « imv clore » : quitte la réunion une fois le résumé publié

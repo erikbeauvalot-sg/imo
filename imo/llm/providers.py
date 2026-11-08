@@ -5,6 +5,7 @@
 - azure-openai : modèle OpenAI (GPT) sur Microsoft Foundry / Azure OpenAI
 - anthropic    : API Anthropic directe (ANTHROPIC_API_KEY)
 - ollama       : modèle local servi par Ollama
+- hermes       : agent Hermes (API compatible OpenAI d'un profil : HERMES_API_URL, HERMES_API_KEY)
 
 Sur Foundry, sans clé d'API, l'authentification passe par Microsoft Entra ID : principal de
 service (AZURE_CLIENT_ID, AZURE_TENANT_ID, AZURE_CLIENT_SECRET), sinon `az login`.
@@ -27,7 +28,7 @@ from imo import metrics
 
 log = logging.getLogger(__name__)
 
-PROVIDERS = ("claude-cli", "foundry", "azure-openai", "anthropic", "ollama")
+PROVIDERS = ("claude-cli", "foundry", "azure-openai", "anthropic", "ollama", "hermes")
 
 DEFAULT_MODELS = {
     "claude-cli": "opus",  # alias résolu par Claude Code vers le dernier Opus
@@ -35,6 +36,7 @@ DEFAULT_MODELS = {
     "azure-openai": "$OPENAI_MODEL",  # nom du déploiement
     "anthropic": "claude-opus-5-5",
     "ollama": "qwen3:14b",
+    "hermes": "$HERMES_MODEL ou oscar",  # nom du profil Hermes
 }
 
 # Scopes des jetons Entra ID (modifiables par AZURE_TOKEN_SCOPE). La doc Claude in Microsoft
@@ -48,6 +50,8 @@ def default_model(provider: str) -> str:
         return os.environ.get("ANTHROPIC_FOUNDRY_MODEL") or "claude-opus-5-5"
     if provider == "azure-openai":
         return os.environ.get("OPENAI_MODEL", "")
+    if provider == "hermes":
+        return os.environ.get("HERMES_MODEL") or "oscar"
     return DEFAULT_MODELS.get(provider, "")
 
 
@@ -227,6 +231,47 @@ class AzureOpenAIChat:
         return (response.choices[0].message.content or "").strip()
 
 
+class HermesAgent:
+    """Agent Hermes, par l'API compatible OpenAI d'un de ses profils (ex. /p/oscar/v1) : son modèle
+    et les outils que le profil autorise (recherche web, mémoire). Plus lent qu'un appel direct au
+    modèle quand il se sert de ses outils."""
+
+    def __init__(self, model: str, *, timeout: float = 300) -> None:
+        import openai
+
+        self.model = model
+        self.name = f"hermes:{model}"
+        self._openai = openai
+        key = os.environ.get("HERMES_API_KEY")
+        if not key:
+            raise LLMError("clé manquante : HERMES_API_KEY (API_SERVER_KEY du profil Hermes)")
+        self.client = openai.AsyncOpenAI(
+            base_url=os.environ.get("HERMES_API_URL") or "http://127.0.0.1:8642/p/oscar/v1",
+            api_key=key,
+            timeout=timeout,
+            max_retries=0,  # une tâche relancée referait ses recherches
+        )
+
+    async def complete(self, system: str, prompt: str) -> str:
+        try:
+            response = await self.client.chat.completions.create(
+                model=self.model,  # nom du profil, annoncé par /v1/models
+                messages=[{"role": "system", "content": system}, {"role": "user", "content": prompt}],
+            )
+        except self._openai.APIStatusError as exc:
+            raise LLMError(f"Hermes : {exc.status_code} {exc.message}") from exc
+        except self._openai.APITimeoutError as exc:
+            raise LLMError("Hermes : pas de réponse dans le délai") from exc
+        except self._openai.APIConnectionError as exc:
+            raise LLMError("Hermes injoignable (HERMES_API_URL)") from exc
+        choice = response.choices[0]
+        text = (choice.message.content or "").strip()
+        # « length » : budget d'itérations épuisé, la réponse reste utilisable
+        if choice.finish_reason in ("error", "cancelled"):
+            raise LLMError(f"Hermes : tâche {choice.finish_reason}" + (f" ({text[:200]})" if text else ""))
+        return text
+
+
 class Ollama:
     """API native d'Ollama (/api/chat), sans dépendance supplémentaire."""
 
@@ -299,6 +344,8 @@ def make_llm(provider: str, model: str | None = None) -> LLM:
         llm = AzureOpenAIChat(model)
     elif provider == "ollama":
         llm = Ollama(model)
+    elif provider == "hermes":
+        llm = HermesAgent(model)
     else:
         raise ValueError(f"Fournisseur LLM inconnu : {provider!r} (choix : {', '.join(PROVIDERS)})")
     return Timed(llm)

@@ -686,3 +686,38 @@ def test_api_command_without_llm_and_close():
 
     closed, chat = asyncio.run(scenario())
     assert closed == [True] and "Résumé de fin" in chat.sent[0]
+
+
+def test_hermes_command_uses_the_hermes_agent():
+    async def scenario():
+        llm, hermes = FakeLLM(), FakeLLM()
+        store = Store(":memory:")
+        sid = store.create_session("https://teams.microsoft.com/meet/1", "IMV - Oscar")
+        chat = FakeChat()
+        agent = IncidentAgent(store, sid, "IMV - Oscar", chat.send, llm=llm, hermes=hermes, managers=["Bob"])
+        await agent.handle(_msg("Bob", "Oscar, hermes cherche l'erreur ORA-12541", "m1"))
+        await agent.wait_analyses()
+        await agent.handle(_msg("Bob", "imv hermes", "m2"))  # tâche manquante
+        await agent.wait_analyses()
+        _, text, _ = await agent.api_command("hermes cause probable ?", "erik")
+        return chat, llm, hermes, text
+
+    chat, llm, hermes, text = asyncio.run(scenario())
+    assert chat.sent[0].startswith("Tâche confiée à Hermes")
+    assert chat.sent[1] == "Symptômes : erreurs 500"
+    assert "Tâche : cherche l'erreur ORA-12541" in hermes.prompts[0] and "Demande faite par Bob" in hermes.prompts[0]
+    assert "imv hermes cherche l'erreur ORA-12541" in chat.sent[2]  # aide sur la tâche manquante
+    assert text == "Symptômes : erreurs 500" and len(hermes.prompts) == 2
+    assert llm.prompts == []  # les analyses restent sur l'autre LLM
+
+
+def test_hermes_command_without_hermes():
+    async def scenario():
+        agent, chat, _, _ = _agent(llm=FakeLLM())
+        await agent.handle(_msg("Bob", "imv hermes cherche X", "m1"))
+        with pytest.raises(ValueError, match="HERMES_API_KEY"):
+            await agent.api_command("hermes cherche X", "erik")
+        return chat
+
+    chat = asyncio.run(scenario())
+    assert chat.sent == ["Hermes n'est pas configuré sur ce serveur (HERMES_API_KEY)."]

@@ -58,6 +58,15 @@ Les analyses sont décomptées de votre abonnement, avec les mêmes limites d'us
 
 Traefik peut publier en HTTPS un service qui tourne sur le VPS hors Docker, en écoute sur `127.0.0.1` (par exemple un tableau de bord d'administration) : copier `traefik/hote.yml.example` en `traefik/<nom>.yml`, adapter le nom de domaine (enregistrement DNS vers le VPS), le port et les adresses IP autorisées. Ces fichiers ne sont pas versionnés et Traefik les prend en compte sans redémarrage. Le service garde sa propre authentification ; le filtre IP (`ipAllowList`) la complète.
 
+## Agent Hermes (`hermes`)
+
+Si l'agent [Hermes](https://hermes-agent.nousresearch.com) tourne sur le même VPS, IMV peut s'en servir comme LLM (`IMV_LLM=hermes`) et, quel que soit le LLM des analyses, pour la commande `imv hermes <tâche>` (recherche web, mémoire d'un incident à l'autre).
+
+1. **Profil dédié** : `hermes profile create oscar --clone` (modèle et réglages du profil principal, sans bots de messagerie). Le contenu des réunions vient des participants : ne lui laisser que des outils sans effet sur le serveur, par exemple `hermes -p oscar config set platform_toolsets.api_server "[web, memory]"` et la liste des autres boîtes à outils dans `agent.disabled_toolsets` (terminal, fichiers, code, navigateur…). Remplacer son `SOUL.md` par une consigne propre à Oscar.
+2. **API** : `API_SERVER_ENABLED=true` et une clé `API_SERVER_KEY` dans `~/.hermes/.env` (profil principal, écoute sur `127.0.0.1:8642`), une autre clé `API_SERVER_KEY` dans `~/.hermes/profiles/oscar/.env`, puis redémarrer le gateway. Avec le gateway multiplexé, le profil répond sous `/p/oscar/v1` et n'accepte que sa propre clé.
+3. **Accès depuis le conteneur** : copier `traefik/hermes-api.yml.example` (seul le préfixe `/p/oscar/` est routé, par le point d'entrée privé `hote-imv`), puis `HERMES_API_KEY=<clé du profil oscar>` dans `deploy/.env` et `docker compose up -d imv`.
+4. **Vérification** : `docker compose exec imv python3 /app/imo_agent.py check-llm --llm hermes`.
+
 ## Supervision (Prometheus)
 
 Trois sources de métriques, pour un Prometheus distant :

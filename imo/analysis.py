@@ -122,6 +122,12 @@ TASKS = {
         "contexte de l'entreprise quand c'est pertinent, en citant l'heure et l'auteur, ex. [10:12 Thomas]. "
         "Sois concis : 10 lignes maximum, sauf si la demande exige plus.\nDemande : {arg}"
     ),
+    "hermes": (
+        "Le responsable d'IMV te confie la tâche ci-dessous. Sers-toi de tes outils si c'est utile "
+        "(recherche et lecture de pages web), et cite tes sources (URL). Appuie-toi sur le chat et le "
+        "contexte de l'entreprise quand c'est pertinent, en citant l'heure et l'auteur, ex. [10:12 Thomas]. "
+        "Sois concis : 12 lignes maximum.\nTâche : {arg}"
+    ),
     "rapport": (
         "L'incident est terminé. Rédige le résumé de fin de call, 25 lignes maximum, avec ces rubriques : "
         "Incident (référence, heure de début et de fin, durée) ; Résumé (2 à 3 lignes) ; Chronologie "
@@ -249,6 +255,13 @@ def build_instruction(task: str, arg: str = "", language: str = "fr") -> str:
         return TASKS["ask"].format(arg=mask_secrets(arg.strip()))
     if task == "chat":
         return TASKS["chat"].format(arg=mask_secrets(arg.strip()))
+    if task == "hermes":
+        if not arg.strip():
+            raise UsageError(
+                "Describe the task after “imv hermes”, for example: imv hermes search for error ORA-12541" if en
+                else "Décrivez la tâche après « imv hermes », par exemple : imv hermes cherche l'erreur ORA-12541"
+            )
+        return TASKS["hermes"].format(arg=mask_secrets(arg.strip()))
     if task == "com":
         audience = resolve_audience(arg)
         if audience is None:
@@ -287,9 +300,9 @@ async def analyze(
         instruction += f" Ne résume que ce qui s'est passé depuis {since}."
     transcript = format_transcript(messages)
     if not transcript:
-        if task != "chat":
+        if task not in ("chat", "hermes"):
             return "No messages to analyze yet." if language == "en" else "Aucun message à analyser pour l'instant."
-        transcript = "(aucun message pour l'instant)"  # la conversation libre n'a pas besoin du chat
+        transcript = "(aucun message pour l'instant)"  # conversation libre, tâche Hermes : pas besoin du chat
     exchanges = "\n\n".join(
         f"{author} : {mask_secrets(request)}\nIMV : {answer}" for author, request, answer in history
     )

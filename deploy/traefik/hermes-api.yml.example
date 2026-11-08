@@ -1,0 +1,15 @@
+# API de l'agent Hermes (sur l'hôte, 127.0.0.1:8642) pour le conteneur IMV seul, par le point
+# d'entrée « hote-imv » (172.30.0.1:8642, réseau privé d'IMV). Seul le préfixe du profil dédié
+# est routé : le profil principal de Hermes, avec tous ses outils, reste injoignable depuis IMV.
+# Copier dans un fichier .yml de ce dossier (non versionné) et adapter le nom du profil.
+http:
+  routers:
+    hermes-api-oscar:
+      rule: PathPrefix(`/p/oscar/`)
+      entryPoints: [hote-imv]
+      service: hermes-api
+  services:
+    hermes-api:
+      loadBalancer:
+        servers:
+          - url: http://127.0.0.1:8642
