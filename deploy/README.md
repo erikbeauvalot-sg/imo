@@ -60,7 +60,7 @@ Traefik peut publier en HTTPS un service qui tourne sur le VPS hors Docker, en �
 
 ## Agent Hermes (`hermes`)
 
-Si l'agent [Hermes](https://hermes-agent.nousresearch.com) tourne sur le même VPS, IMV peut s'en servir comme LLM (`IMV_LLM=hermes`) et, quel que soit le LLM des analyses, pour la commande `imv hermes <tâche>` (recherche web, mémoire d'un incident à l'autre).
+Si l'agent [Hermes](https://hermes-agent.nousresearch.com) tourne sur le même VPS, IMV peut s'en servir comme LLM (`IMV_LLM=hermes`) et, quel que soit le LLM des analyses, comme agent de recherche facultatif de la commande `imv recherche <sujet>` (recherche web, mémoire d'un incident à l'autre). Sans Hermes, Oscar fonctionne de la même façon avec n'importe quel LLM, sans parler de recherche web.
 
 1. **Profil dédié** : `hermes profile create oscar --clone` (modèle et réglages du profil principal, sans bots de messagerie). Le contenu des réunions vient des participants : ne lui laisser que des outils sans effet sur le serveur, par exemple `hermes -p oscar config set platform_toolsets.api_server "[web, memory]"` et la liste des autres boîtes à outils dans `agent.disabled_toolsets` (terminal, fichiers, code, navigateur…). Remplacer son `SOUL.md` par une consigne propre à Oscar.
 2. **API** : `API_SERVER_ENABLED=true` et une clé `API_SERVER_KEY` dans `~/.hermes/.env` (profil principal, écoute sur `127.0.0.1:8642`), une autre clé `API_SERVER_KEY` dans `~/.hermes/profiles/oscar/.env`, puis redémarrer le gateway. Avec le gateway multiplexé, le profil répond sous `/p/oscar/v1` et n'accepte que sa propre clé.

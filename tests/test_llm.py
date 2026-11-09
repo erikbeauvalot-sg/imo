@@ -73,7 +73,7 @@ def test_analyze_builds_prompt():
     result = asyncio.run(analyze(llm, "resume", [_row("Alice", "Erreurs 500")], "INC42"))
     assert result == "Symptômes : erreurs 500"
     system, prompt = llm.calls[0]
-    assert system == SYSTEM
+    assert system == build_system()
     assert "Incident : INC42" in prompt and "<chat>" in prompt and "Alice : Erreurs 500" in prompt
 
 
@@ -83,10 +83,10 @@ def test_context_goes_into_system_prompt(tmp_path):
     llm = FakeLLM()
     asyncio.run(analyze(llm, "pistes", [_row("Alice", "Erreurs 500")], context=context))
     system, prompt = llm.calls[0]
-    assert system.startswith(SYSTEM) and "<contexte>\nÉquipe DBA : astreinte dba-oncall\n</contexte>" in system
+    assert system.startswith(build_system()) and "<contexte>\nÉquipe DBA : astreinte dba-oncall\n</contexte>" in system
     # Contexte dans le prompt système (mis en cache), pas dans le message
     assert "dba-oncall" not in prompt and "Hypothèses" in prompt
-    assert build_system(None) == build_system("  \n") == SYSTEM
+    assert build_system(None) == build_system("  \n") == SYSTEM.replace("{name}", "IMV")
 
 
 def test_unreadable_context_file(tmp_path):

@@ -7,6 +7,8 @@
 - ollama       : modèle local servi par Ollama
 - hermes       : agent Hermes (API compatible OpenAI d'un profil : HERMES_API_URL, HERMES_API_KEY)
 
+À part, l'agent outillé des recherches (« imv recherche ») est facultatif : voir research_agent().
+
 Sur Foundry, sans clé d'API, l'authentification passe par Microsoft Entra ID : principal de
 service (AZURE_CLIENT_ID, AZURE_TENANT_ID, AZURE_CLIENT_SECRET), sinon `az login`.
 """
@@ -231,13 +233,13 @@ class AzureOpenAIChat:
         return (response.choices[0].message.content or "").strip()
 
 
-# Consignes ajoutées au prompt système de chaque requête à Hermes, selon l'usage : portées par la
-# requête elle-même, elles valent quel que soit le réglage du profil Hermes.
+# Consignes ajoutées au prompt système de chaque requête à un agent outillé, selon l'usage : portées
+# par la requête elle-même, elles valent quel que soit le réglage de l'agent (profil Hermes…).
 HERMES_ANALYSIS_MODE = (
-    "Mode analyse (consigne d'Oscar, prioritaire) : réponds uniquement à partir des messages et du "
+    "Mode analyse (consigne d'IMV, prioritaire) : réponds uniquement à partir des messages et du "
     "contexte fournis. N'utilise aucun outil : pas de recherche web, et n'enregistre rien en mémoire."
 )
-HERMES_TASK_MODE = """Mode tâche (consigne d'Oscar, prioritaire) :
+HERMES_TASK_MODE = """Mode tâche (consigne d'IMV, prioritaire) :
 - Recherche web : 3 recherches au plus. Dans les requêtes, uniquement des termes techniques génériques \
 (code ou message d'erreur public, produit, version) ; jamais un nom interne lu dans la réunion ou le \
 contexte (serveur, application maison, domaine, adresse IP, client, projet, personne).
@@ -248,26 +250,29 @@ interne à l'entreprise ni un secret.
 - Cite tes sources (URL)."""
 
 
-class HermesAgent:
-    """Agent Hermes, par l'API compatible OpenAI d'un de ses profils (ex. /p/oscar/v1) : son modèle
-    et les outils que le profil autorise (recherche web, mémoire). `tasks` : client des tâches
-    confiées (imv hermes), qui peut se servir des outils ; sinon client des analyses, sans outil."""
+class ToolAgent:
+    """Agent outillé (Hermes ou autre) joint par son API compatible OpenAI, par exemple le profil
+    Hermes /p/oscar/v1 : son modèle et les outils qu'il autorise (recherche web, mémoire). `tasks` :
+    client des recherches confiées (imv recherche), qui peut se servir des outils ; sinon client des
+    analyses, sans outil. `label` : nom de l'agent dans les messages."""
 
-    def __init__(self, model: str, *, tasks: bool = False, timeout: float = 300) -> None:
+    def __init__(
+        self, model: str, *, url: str, key: str, label: str, url_variable: str, tasks: bool = False,
+        timeout: float = 300,
+    ) -> None:
         import openai
 
         self.model = model
+        self.label = label
+        self.url_variable = url_variable
         self.mode = HERMES_TASK_MODE if tasks else HERMES_ANALYSIS_MODE
-        self.name = f"hermes:{model}"
+        self.name = f"{label.lower()}:{model}"
         self._openai = openai
-        key = os.environ.get("HERMES_API_KEY")
-        if not key:
-            raise LLMError("clé manquante : HERMES_API_KEY (API_SERVER_KEY du profil Hermes)")
         self.client = openai.AsyncOpenAI(
-            base_url=os.environ.get("HERMES_API_URL") or "http://127.0.0.1:8642/p/oscar/v1",
+            base_url=url,
             api_key=key,
             timeout=timeout,
-            max_retries=0,  # une tâche relancée referait ses recherches
+            max_retries=0,  # une recherche relancée referait ses requêtes
         )
 
     async def complete(self, system: str, prompt: str) -> str:
@@ -280,17 +285,58 @@ class HermesAgent:
                 ],
             )
         except self._openai.APIStatusError as exc:
-            raise LLMError(f"Hermes : {exc.status_code} {exc.message}") from exc
+            raise LLMError(f"{self.label} : {exc.status_code} {exc.message}") from exc
         except self._openai.APITimeoutError as exc:
-            raise LLMError("Hermes : pas de réponse dans le délai") from exc
+            raise LLMError(f"{self.label} : pas de réponse dans le délai") from exc
         except self._openai.APIConnectionError as exc:
-            raise LLMError("Hermes injoignable (HERMES_API_URL)") from exc
+            raise LLMError(f"{self.label} injoignable ({self.url_variable})") from exc
         choice = response.choices[0]
         text = (choice.message.content or "").strip()
         # « length » : budget d'itérations épuisé, la réponse reste utilisable
         if choice.finish_reason in ("error", "cancelled"):
-            raise LLMError(f"Hermes : tâche {choice.finish_reason}" + (f" ({text[:200]})" if text else ""))
+            raise LLMError(f"{self.label} : tâche {choice.finish_reason}" + (f" ({text[:200]})" if text else ""))
         return text
+
+
+def _hermes(model: str, *, tasks: bool) -> ToolAgent:
+    key = os.environ.get("HERMES_API_KEY")
+    if not key:
+        raise LLMError("clé manquante : HERMES_API_KEY (API_SERVER_KEY du profil Hermes)")
+    return ToolAgent(
+        model,
+        url=os.environ.get("HERMES_API_URL") or "http://127.0.0.1:8642/p/oscar/v1",
+        key=key,
+        label="Hermes",
+        url_variable="HERMES_API_URL",
+        tasks=tasks,
+    )
+
+
+def research_configured() -> bool:
+    """Un agent de recherche est-il configuré (voir research_agent) ?"""
+    return bool(os.environ.get("IMV_AGENT_KEY") or os.environ.get("HERMES_API_KEY"))
+
+
+def research_agent() -> tuple[LLM, str] | None:
+    """Agent outillé des recherches (« imv recherche »), facultatif et indépendant du LLM des
+    analyses : (client, nom affiché), ou None si aucun agent n'est configuré. Agent compatible
+    OpenAI quelconque par IMV_AGENT_URL, IMV_AGENT_KEY, IMV_AGENT_MODEL et IMV_AGENT_NAME ; à
+    défaut, Hermes par HERMES_API_KEY (et HERMES_API_URL, HERMES_MODEL)."""
+    if key := os.environ.get("IMV_AGENT_KEY"):
+        url = os.environ.get("IMV_AGENT_URL")
+        if not url:
+            raise LLMError("adresse manquante : IMV_AGENT_URL (API compatible OpenAI de l'agent)")
+        label = os.environ.get("IMV_AGENT_NAME") or "Agent"
+        agent = ToolAgent(
+            os.environ.get("IMV_AGENT_MODEL") or "default", url=url, key=key, label=label,
+            url_variable="IMV_AGENT_URL", tasks=True,
+        )
+    elif research_configured():
+        agent = _hermes(default_model("hermes"), tasks=True)
+        label = agent.label = os.environ.get("IMV_AGENT_NAME") or "Hermes"
+    else:
+        return None
+    return Timed(agent), label
 
 
 class Ollama:
@@ -356,7 +402,7 @@ class Timed:
 
 
 def make_llm(provider: str, model: str | None = None, *, hermes_tasks: bool = False) -> LLM:
-    """`hermes_tasks` : client Hermes des tâches confiées (outils permis), sinon des analyses."""
+    """`hermes_tasks` : client Hermes des recherches confiées (outils permis), sinon des analyses."""
     model = model or default_model(provider)
     if provider == "claude-cli":
         llm: LLM = ClaudeCLI(model)
@@ -367,7 +413,7 @@ def make_llm(provider: str, model: str | None = None, *, hermes_tasks: bool = Fa
     elif provider == "ollama":
         llm = Ollama(model)
     elif provider == "hermes":
-        llm = HermesAgent(model, tasks=hermes_tasks)
+        llm = _hermes(model, tasks=hermes_tasks)
     else:
         raise ValueError(f"Fournisseur LLM inconnu : {provider!r} (choix : {', '.join(PROVIDERS)})")
     return Timed(llm)

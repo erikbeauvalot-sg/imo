@@ -11,7 +11,7 @@ from urllib.parse import quote
 
 import pytest
 
-from imo.agent import WELCOME, IncidentAgent
+from imo.agent import IncidentAgent
 from imo.connectors.teams import TeamsJoinError, TeamsSession, validate_display_name
 from imo.connectors.teams.avatar import avatar_video
 from imo.connectors.teams.join import disable_app_launch, validate_meeting_url, web_join_url
@@ -132,7 +132,7 @@ def test_agent_welcome_and_commands_in_chat(query):
             await session.close()
 
     sent, messages, incident = asyncio.run(scenario())
-    assert sent[0].startswith(WELCOME["fr"].format(name="Assistant IM"))
+    assert sent[0].startswith("Bonjour, je suis Assistant IM, l'assistant de l'Incident Manager")
     assert sent[1].startswith("Suivi de l'incident INC0012345 démarré")
     # Ni l'accueil ni la réponse de l'agent ne sont enregistrés comme messages humains
     assert messages == [

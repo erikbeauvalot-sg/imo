@@ -120,6 +120,9 @@ def disable_app_launch(url: str) -> str:
 class TeamsSession:
     """Une participation de l'agent à une réunion Teams."""
 
+    platform = "teams"
+    sees_all_messages = True  # l'agent lit tout le chat de la réunion
+
     def __init__(
         self,
         url: str,

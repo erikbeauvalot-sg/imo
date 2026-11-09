@@ -6,7 +6,6 @@ from __future__ import annotations
 import asyncio
 import contextvars
 import logging
-import os
 import time
 from collections import deque
 from dataclasses import dataclass, field
@@ -18,7 +17,7 @@ from imo.connectors import JoinError
 from imo.connectors.teams import TeamsSession
 from imo.connectors.telegram import TelegramSession, is_telegram_url
 from imo.connectors.teams.avatar import avatar_video
-from imo.llm import make_llm
+from imo.llm import make_llm, research_agent
 from imo.models import ChatMessage
 from imo.sinks import MultiSink, Sink
 from imo.storage import Store
@@ -101,11 +100,11 @@ class MeetingRunner:
                 browser=config.browser,
             )
         self.llm = make_llm(config.llm, config.llm_model) if config.llm else None
-        # Agent Hermes pour « imv hermes <tâche> » : disponible dès que HERMES_API_KEY est défini,
-        # quel que soit le LLM des analyses ; client distinct, qui peut se servir des outils.
-        self.hermes = make_llm("hermes", hermes_tasks=True) if os.environ.get("HERMES_API_KEY") else None
+        # Agent outillé facultatif pour « imv recherche <sujet> » (Hermes ou autre, voir
+        # research_agent), quel que soit le LLM des analyses ; client distinct, qui peut se servir des outils.
+        self.research, self.research_name = research_agent() or (None, "")
         self.context_path = resolve_context_path(config.context)
-        self.context = load_context(self.context_path) if self.llm or self.hermes else None
+        self.context = load_context(self.context_path) if self.llm or self.research else None
         # Options gardées en base : la session peut être relancée à l'identique depuis l'interface web.
         options = {
             "incident": config.incident,
@@ -189,7 +188,10 @@ class MeetingRunner:
                 session.send_chat,
                 sink=MultiSink(*self.sinks, first_message, first_caption),
                 llm=self.llm,
-                hermes=self.hermes,
+                research=self.research,
+                research_name=self.research_name,
+                platform=session.platform,
+                sees_all=lambda: session.sees_all_messages,
                 context=self.context,
                 managers=config.managers,
                 on_close=self.stop,  # « imv clore » : quitte la réunion une fois le résumé publié

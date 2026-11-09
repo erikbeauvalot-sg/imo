@@ -6,7 +6,7 @@ import asyncio
 
 import pytest
 
-from imo.agent import parse_voice_request, HELP, WELCOME, Command, IncidentAgent, parse_command
+from imo.agent import parse_voice_request, Command, IncidentAgent, parse_command
 from imo.llm import LLMError
 from imo.models import ChatMessage
 from imo.storage import Store
@@ -84,7 +84,7 @@ def test_analysis_command_runs_in_background():
         return chat, llm, store, sid
 
     chat, llm, store, sid = asyncio.run(scenario())
-    assert chat.sent == ["Symptômes : erreurs 500"]
+    assert chat.sent == ["📋 Point de situation\nSymptômes : erreurs 500"]
     assert "Alice : Erreurs 500 sur le paiement" in llm.prompts[0]
     assert store.count_messages(sid) == 3
     # Le LLM sait à qui répondre, et que l'agent n'est pas un participant qui arrive
@@ -105,7 +105,7 @@ def test_pistes_uses_context():
         return chat.sent, llm
 
     sent, llm = asyncio.run(scenario())
-    assert sent == ["Symptômes : erreurs 500"]
+    assert sent == ["📋 Pistes\nSymptômes : erreurs 500"]
     assert "Hypothèses" in llm.prompts[0] and "dba-oncall" in llm.systems[0]
 
 
@@ -212,7 +212,7 @@ def test_first_person_greeting_starts_a_conversation(text, source):
     sent, llm, agent = asyncio.run(scenario())
     assert not any("Unknown command" in s for s in sent)
     assert "Erik is the IMV manager" in sent[0] and list(agent.managers.values()) == ["Erik"]
-    assert sent[-1] == "Symptômes : erreurs 500"  # réponse du LLM
+    assert sent[-1] == "💬 Symptômes : erreurs 500"  # réponse du LLM, en conversation
     assert text.split(", ")[1] in llm.prompts[0].split("Demande :")[1]
     assert "dba-oncall" in llm.systems[0]
 
@@ -288,12 +288,12 @@ def test_commands_and_recording():
         await agent.handle(_msg("Bob", "imv statut", "m3"))
         await agent.handle(_msg("Bob", "imv aide", "m4"))
         await agent.handle(_msg("Bob", "imv xyz", "m6"))
-        return chat, store, sid
+        return agent, chat, store, sid
 
-    chat, store, sid = asyncio.run(scenario())
+    agent, chat, store, sid = asyncio.run(scenario())
     assert chat.sent[0].startswith("Suivi de l'incident INC0012345 démarré, IM : Bob")
-    assert "messages enregistrés : 3" in chat.sent[1]
-    assert chat.sent[2] == HELP.format(name="Assistant IM")
+    assert "messages enregistrés : 3" in chat.sent[1] and "analyses : non activées" in chat.sent[1]
+    assert chat.sent[2] == agent.help_text()
     assert "Commande inconnue" in chat.sent[3] and "Vouliez-vous" not in chat.sent[3]
 
     incident = store.session_incident(sid)
@@ -403,9 +403,9 @@ def test_welcome_names_the_managers():
         return chat.sent[0], bare_chat.sent[0]
 
     with_im, without_im = asyncio.run(scenario())
-    welcome = WELCOME["fr"].format(name="Assistant IM")
-    assert with_im.startswith(welcome) and "réservées à Erik Beauvalot" in with_im
-    assert without_im == welcome and "« Assistant IM, un résumé »" in welcome
+    assert with_im.startswith(without_im) and "réservées à Erik Beauvalot" in with_im
+    assert without_im.startswith("Bonjour, je suis Assistant IM") and "n'agis sur aucun système" in without_im
+    assert "réservées" not in without_im
 
 
 def test_only_authorized_people_run_commands():
@@ -426,7 +426,7 @@ def test_only_authorized_people_run_commands():
     agent, sent = asyncio.run(scenario())
     assert sent[0].startswith("Sophie Lambert, « imv pause » est réservé aux personnes autorisées")
     assert "imv autoriser Sophie Lambert" in sent[0]
-    assert sent[1] == HELP.format(name="Assistant IM")
+    assert sent[1] == agent.help_text()
     assert sent[2] == "Sophie Lambert peut maintenant utiliser les commandes IMV."
     assert sent[3].startswith("Enregistrement du chat en pause")
     assert "réservé aux responsables d'IMV" in sent[4]
@@ -530,7 +530,7 @@ def test_voice_commands(lines, verb):
 
     sent, llm = asyncio.run(scenario())
     assert sent[0].startswith(f"Bob (à l'oral) : « {lines[-1] if len(lines) > 1 else lines[0]} » → imv ")
-    assert sent[1].startswith(verb) and len(llm.prompts) == 1
+    assert sent[1].startswith("📋 ") and verb in sent[1] and len(llm.prompts) == 1
 
 
 def test_voice_requests_parsing_and_rights():
@@ -652,10 +652,10 @@ def test_api_command_answers_and_posts_without_meeting_permissions():
         await agent.handle(_msg("Alice", "Erreurs 500 sur le paiement", "m1"))
         # « erik » n'est pas responsable dans la réunion : les droits viennent du serveur web
         command, text, delivered = await agent.api_command("résumé", "erik")
-        assert (command.verb, text, delivered) == ("resume", "Symptômes : erreurs 500", True)
+        assert (command.verb, text, delivered) == ("resume", "📋 Point de situation\nSymptômes : erreurs 500", True)
         assert "Demande faite par erik" in llm.prompts[-1]
         _, text, _ = await agent.api_command("summary", "erik")  # alias anglais
-        assert text == "Symptômes : erreurs 500"
+        assert text.endswith("Symptômes : erreurs 500")
         command, text, _ = await agent.api_command("pause", "erik")
         assert command.verb == "pause" and agent.paused
         await agent.api_command("autoriser Alice", "erik")
@@ -667,7 +667,7 @@ def test_api_command_answers_and_posts_without_meeting_permissions():
         return chat
 
     chat = asyncio.run(scenario())
-    assert chat.sent[0] == "Symptômes : erreurs 500"
+    assert chat.sent[0] == "📋 Point de situation\nSymptômes : erreurs 500"
 
 
 def test_api_command_without_llm_and_close():
@@ -688,36 +688,140 @@ def test_api_command_without_llm_and_close():
     assert closed == [True] and "Résumé de fin" in chat.sent[0]
 
 
-def test_hermes_command_uses_the_hermes_agent():
+def test_research_command_uses_the_research_agent():
     async def scenario():
         llm, hermes = FakeLLM(), FakeLLM()
         store = Store(":memory:")
         sid = store.create_session("https://teams.microsoft.com/meet/1", "IMV - Oscar")
         chat = FakeChat()
-        agent = IncidentAgent(store, sid, "IMV - Oscar", chat.send, llm=llm, hermes=hermes, managers=["Bob"])
-        await agent.handle(_msg("Bob", "Oscar, hermes cherche l'erreur ORA-12541", "m1"))
+        agent = IncidentAgent(store, sid, "IMV - Oscar", chat.send, llm=llm, research=hermes,
+                              research_name="Hermes", managers=["Bob"])
+        await agent.welcome()
+        await agent.handle(_msg("Bob", "Oscar, recherche l'erreur ORA-12541", "m1"))
         await agent.wait_analyses()
-        await agent.handle(_msg("Bob", "imv hermes", "m2"))  # tâche manquante
+        await agent.handle(_msg("Bob", "imv recherche", "m2"))  # sujet manquant
         await agent.wait_analyses()
-        _, text, _ = await agent.api_command("hermes cause probable ?", "erik")
+        _, text, _ = await agent.api_command("hermes cause probable ?", "erik")  # ancien nom accepté
+        await agent.handle(_msg("Bob", "imv aide", "m3"))
         return chat, llm, hermes, text
 
     chat, llm, hermes, text = asyncio.run(scenario())
-    assert chat.sent[0].startswith("Tâche confiée à Hermes")
-    assert chat.sent[1] == "Symptômes : erreurs 500"
-    assert "Tâche : cherche l'erreur ORA-12541" in hermes.prompts[0] and "Demande faite par Bob" in hermes.prompts[0]
-    assert "imv hermes cherche l'erreur ORA-12541" in chat.sent[2]  # aide sur la tâche manquante
-    assert text == "Symptômes : erreurs 500" and len(hermes.prompts) == 2
+    assert "« imv recherche <sujet> » confie une recherche web à Hermes" in chat.sent[0]
+    assert chat.sent[1].startswith("Recherche confiée à Hermes")
+    assert chat.sent[2] == "🔎 Recherche (Hermes)\nSymptômes : erreurs 500"
+    assert "Recherche : l'erreur ORA-12541" in hermes.prompts[0] and "Demande faite par Bob" in hermes.prompts[0]
+    assert "Cette demande est une recherche" in hermes.systems[0]
+    assert "imv recherche erreur ORA-12541" in chat.sent[3]  # aide sur le sujet manquant
+    assert text.endswith("Symptômes : erreurs 500") and len(hermes.prompts) == 2
+    assert "imv recherche <sujet> : confie une recherche web à Hermes" in chat.sent[-1]
     assert llm.prompts == []  # les analyses restent sur l'autre LLM
 
 
-def test_hermes_command_without_hermes():
+def test_without_research_agent_nothing_mentions_it():
+    """Déploiement sans agent outillé (ex. Azure OpenAI seul) : ni l'accueil, ni l'aide, ni les
+    consignes du LLM ne parlent de Hermes ou d'une recherche à confier."""
     async def scenario():
-        agent, chat, _, _ = _agent(llm=FakeLLM())
-        await agent.handle(_msg("Bob", "imv hermes cherche X", "m1"))
-        with pytest.raises(ValueError, match="HERMES_API_KEY"):
-            await agent.api_command("hermes cherche X", "erik")
-        return chat
+        llm = FakeLLM()
+        agent, chat, _, _ = _agent(llm=llm)
+        await agent.welcome()
+        await agent.handle(_msg("Alice", "Erreurs 500 sur le paiement", "m1"))
+        await agent.handle(_msg("Bob", "imv aide", "m2"))
+        await agent.handle(_msg("Bob", "imv résumé", "m3"))
+        await agent.handle(_msg("Bob", "imv hermes cherche X", "m4"))
+        await agent.wait_analyses()
+        with pytest.raises(ValueError, match="aucun agent de recherche"):
+            await agent.api_command("recherche X", "erik")
+        return chat, llm
 
-    chat = asyncio.run(scenario())
-    assert chat.sent == ["Hermes n'est pas configuré sur ce serveur (HERMES_API_KEY)."]
+    chat, llm = asyncio.run(scenario())
+    assert not any("Hermes" in t or "imv recherche" in t for t in chat.sent)
+    assert any(t.startswith("Aucune recherche web n'est disponible sur ce serveur") for t in chat.sent)
+    assert "Hermes" not in llm.systems[0] and "imv recherche" not in llm.systems[0]
+    assert "Recherche web : aucune sur ce serveur" in llm.systems[0]
+
+
+def test_capabilities_shape_welcome_help_and_situation():
+    async def scenario():
+        bare, bare_chat, _, _ = _agent(llm=None)
+        await bare.welcome()
+        llm = FakeLLM()
+        agent, _, store, sid = _agent(llm=llm)
+        await agent.handle(_msg("Bob", "imv démarrer INC7", "m1"))
+        await agent.handle(_msg("Alice", "erreurs 500", "m2"))
+        await agent.handle(_msg("Bob", "Oscar, quelles pistes ?", "m3"))  # nom de l'agent : Assistant IM
+        await agent.handle(_msg("Bob", "imv quelles pistes ?", "m4"))
+        await agent.wait_analyses()
+        return bare, bare_chat.sent[0], agent, llm
+
+    bare, bare_welcome, agent, llm = asyncio.run(scenario())
+    # Sans LLM : ni analyse ni conversation promises
+    assert "ne sont pas activées sur ce serveur" in bare_welcome and "explique-moi" not in bare_welcome
+    assert "imv pistes" not in bare.help_text() and "non activées sur ce serveur" in bare.help_text()
+    assert "imv pistes" in agent.help_text() and "conversation libre" in agent.help_text()
+    # « imv quelles pistes ? » : demande courte → analyse « pistes », pas une conversation
+    assert "Hypothèses" in llm.prompts[0]
+    # L'état réel de la session est transmis au LLM, sous le nom de l'agent
+    system = llm.systems[0]
+    assert system.startswith("Tu es Assistant IM, l'assistant IMV")
+    assert "Incident : INC7, suivi démarré" in system and "Responsable(s) d'IMV : Bob" in system
+    assert "imv pistes" in system and "Conversation suivie : réunion Teams" in system
+
+
+@pytest.mark.parametrize(
+    "text, verb, arg",
+    [
+        ("Oscar, quelles pistes ?", "pistes", ""),
+        ("Oscar, fais le point", "resume", ""),
+        ("Oscar, démarre INC001", "demarrer", "INC001"),
+        ("Oscar, démarre le suivi de l'incident INC-42", "demarrer", "INC-42"),
+        ("Oscar, lance le suivi", "demarrer", ""),
+        ("Oscar, lance une recherche sur le DNS", "chat", None),  # pas un démarrage
+        ("Oscar, démarre le serveur web", "chat", None),
+        ("Oscar, aide-moi à comprendre le pool", "chat", None),  # pas l'aide
+        ("Oscar, pourquoi les pistes réseau ont-elles été écartées si vite ?", "chat", None),  # trop long
+        ("Oscar, clos l'incident", "clore_demande", ""),
+    ],
+)
+def test_written_requests_are_routed(text, verb, arg):
+    store = Store(":memory:")
+    sid = store.create_session("https://teams.microsoft.com/meet/1", "IMV - Oscar")
+    agent = IncidentAgent(store, sid, "IMV - Oscar", FakeChat().send, llm=FakeLLM(), managers=["Bob"])
+    command = agent._as_chat(agent._route(agent._named_command(text)), "Bob")
+    assert command.verb == verb and (arg is None or command.arg == arg)
+
+
+def test_close_request_in_writing_asks_for_confirmation():
+    async def scenario():
+        agent, chat, _, _, closed = _closing_agent(FakeLLM())
+        await agent.handle(_msg("Bob", "imv clos l'incident", "m1"))
+        assert closed == [] and "je clos l'incident ?" in chat.sent[0]
+        await agent.handle(_msg("Bob", "oui", "m2"))
+        await agent.wait_analyses()
+        return closed
+
+    assert asyncio.run(scenario()) == [True]
+
+
+def test_telegram_vocabulary_and_blind_view():
+    async def scenario():
+        store = Store(":memory:")
+        sid = store.create_session("telegram:-1", "IMV - Oscar")
+        chat = FakeChat()
+        sees = {"all": False}
+        agent = IncidentAgent(store, sid, "IMV - Oscar", chat.send, llm=FakeLLM(), managers=["Bob"],
+                              platform="telegram", sees_all=lambda: sees["all"])
+        await agent.welcome()
+        await agent.handle(_msg("Bob", "imv pistes", "m1"))
+        await agent.wait_analyses()
+        await agent.handle(_msg("Bob", "imv statut", "m2"))
+        sees["all"] = True
+        await agent.handle(_msg("Bob", "imv statut", "m3"))
+        await agent.farewell()
+        return agent, chat.sent
+
+    agent, sent = asyncio.run(scenario())
+    assert "messages de ce groupe" in sent[0] and "nommez-moi administrateur" in sent[0]
+    assert sent[1].startswith("Je ne vois que les commandes")  # pas « aucun message à analyser »
+    assert "nommez-moi administrateur" in sent[2] and "nommez-moi" not in sent[3]
+    assert sent[4].startswith("J'arrête de suivre ce groupe : le suivi par IMV s'arrête ici")
+    assert "oral" not in agent.help_text() and "Conversation suivie : groupe Telegram" in agent.situation()

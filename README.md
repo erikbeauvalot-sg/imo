@@ -63,6 +63,25 @@ Avec `--captions`, l'agent active les **sous-titres en direct de Teams** (menu �
 python imo_agent.py join "<url>" --captions --llm azure-openai
 ```
 
+### Rôle d'Oscar et façons de lui parler
+
+Oscar (le nom vient de `--name`, « IMV - Oscar ») est le **copilote de l'Incident Manager** : il écoute, structure et propose ; l'IM et l'équipe décident et agissent. Il n'agit sur aucun système et ne prétend jamais avoir fait une action : s'il y a une commande à taper, il l'indique. Le même rôle vaut sur Teams et sur Telegram.
+
+| Mode | Déclencheur | Ce qui se passe | Réponse |
+| --- | --- | --- | --- |
+| Écoute | tout message | enregistré, sans réponse (sauf alertes : secret posté, fin d'incident évoquée) | — |
+| Commande | `imv statut`, `/statut`, « Oscar, statut », « Oscar, démarre INC123 » | action immédiate, sans LLM | courte |
+| Analyse | `imv pistes`, « Oscar, quelles pistes ? », « Oscar, fais le point » | analyse typée du chat par le LLM | `📋 Pistes`… |
+| Conversation | « Oscar, explique-moi… » (responsable) | demande libre au LLM, qui répond sans jamais agir | `💬` |
+| Recherche | `imv recherche <sujet>` | recherche web confiée à l'agent outillé, sources citées | `🔎 Recherche (Hermes)` |
+
+Les briques sont indépendantes et facultatives ; l'accueil, l'aide, le menu Telegram et les consignes du LLM ne décrivent que ce qui est disponible :
+
+- **le modèle** (`--llm`, `IMV_LLM`) : n'importe quel fournisseur (Azure OpenAI, Claude, Ollama, Hermes…). Sans modèle, Oscar enregistre et gère commandes, droits et clôture, sans analyse ni conversation ;
+- **l'agent outillé** de recherche : facultatif (voir « Agent de recherche » ci-dessous). Sans lui, Oscar ne parle ni de recherche web ni de Hermes.
+
+Une demande écrite courte (6 mots au plus) qui correspond à une analyse est exécutée comme la commande (« Oscar, quelles pistes ? ») ; une demande plus longue reste une conversation. « Oscar, démarre INC123 » démarre le suivi ; « Oscar, clos l'incident » demande d'abord confirmation (« oui » ou `imv clore`). À chaque demande, le LLM reçoit l'état réel de la session (incident démarré ou non, responsables, pause, plateforme, capacités disponibles, commandes) : il ne l'invente pas.
+
 ### Commandes dans le chat
 
 Un invité ne peut pas être @mentionné : les commandes commencent par `imv`.
@@ -82,7 +101,7 @@ Un invité ne peut pas être @mentionné : les commandes commencent par `imv`.
 | `imv actions` | Actions identifiées, owners, statuts |
 | `imv com [direction\|utilisateurs\|tech]` | Brouillon de communication pour l'audience choisie |
 | `imv ? <question>` | Question libre : réponse tirée du chat, complétée si utile par des pistes |
-| `imv hermes <tâche>` | Confie la tâche à l'agent Hermes (recherche web, mémoire), avec le chat et le contexte de l'entreprise ; disponible dès que `HERMES_API_KEY` est défini, quel que soit le LLM des analyses |
+| `imv recherche <sujet>` | Confie une recherche web à l'agent outillé, avec le chat et le contexte de l'entreprise ; seulement si un agent est configuré (ci-dessous), quel que soit le LLM des analyses. `imv hermes` est accepté comme ancien nom |
 | `imv rapport` | Aperçu du résumé de fin, sans clore |
 | `imv clore` | Clôture (responsable uniquement) : publie le résumé de fin, marque l'incident clos et quitte la réunion |
 
@@ -119,6 +138,15 @@ Les commandes d'analyse demandent l'option `--llm` (voir ci-dessous). Si le chat
 | `anthropic` | API Anthropic directe | `ANTHROPIC_API_KEY` | `claude-opus-5-5` |
 | `ollama` | Modèle local, rien ne sort de la machine | Ollama lancé (`OLLAMA_HOST` si autre que `localhost:11434`) | `qwen3:14b` |
 | `hermes` | Agent [Hermes](https://hermes-agent.nousresearch.com) : son modèle et ses outils autorisés (recherche web, mémoire) ; plus lent | `HERMES_API_KEY` (clé `API_SERVER_KEY` d'un profil Hermes), `HERMES_API_URL` (défaut `http://127.0.0.1:8642/p/oscar/v1`) | nom du profil (`oscar`, `HERMES_MODEL`) |
+
+#### Agent de recherche (facultatif)
+
+`imv recherche <sujet>` confie une recherche web à un agent outillé, distinct du LLM des analyses : par exemple une analyse sur Azure OpenAI et des recherches par Hermes, ou des analyses sans aucune recherche (cas d'un réseau d'entreprise). Configuration, au choix :
+
+- Hermes : `HERMES_API_KEY` (et `HERMES_API_URL`, `HERMES_MODEL`), comme pour le fournisseur `hermes` ;
+- tout autre agent compatible OpenAI : `IMV_AGENT_URL`, `IMV_AGENT_KEY`, `IMV_AGENT_MODEL` (défaut `default`) et `IMV_AGENT_NAME` (nom affiché, défaut « Agent »).
+
+Sans ces variables, la commande, le menu et toute mention de recherche web disparaissent.
 
 Les variables peuvent être dans l'environnement ou dans un fichier `.env` du répertoire courant (modèle : `.env.example` ; l'environnement est prioritaire). `python imo_agent.py check-llm --llm foundry` vérifie la connexion. `--llm-model` change le modèle. Les mots de passe et jetons repérés dans le chat sont masqués avant l'envoi au LLM. Avec `claude-cli`, le contenu du chat part vers votre compte Claude personnel : réservez-le à des réunions de test tant que le RSSI n'a pas validé.
 
@@ -228,7 +256,7 @@ Codes : 401 non connecté ou jeton invalide, 403 droits insuffisants, 404 sessio
 
 ### Essais sur Telegram (sans Teams)
 
-Un groupe Telegram peut tenir lieu de chat de réunion : Oscar y suit la conversation avec les mêmes commandes (`Oscar, résumé`, `imv pistes`, `imv hermes …`, conversation libre, clôture). Pas de voix ni de caméra.
+Un groupe Telegram peut tenir lieu de chat de réunion : Oscar y suit la conversation avec les mêmes commandes (`Oscar, résumé`, `imv pistes`, `imv recherche …` si un agent est configuré, conversation libre, clôture). Pas de voix ni de caméra.
 
 1. Créer le bot avec [@BotFather](https://t.me/BotFather) : `/newbot` (nom « Oscar », identifiant libre, par exemple `oscar_imv_bot`), puis **`/setprivacy` → Disable** : sans cela, le bot ne voit que les commandes `/…` du groupe.
 2. Variables du serveur : `TELEGRAM_BOT_TOKEN` (jeton donné par BotFather), `TELEGRAM_ALLOWED_USERS` (qui peut lancer Oscar par `/oscar` : identifiants numériques ou `@noms` Telegram, séparés par des virgules), et facultativement `IMV_TELEGRAM_GROUP` (groupe IMV des sessions lancées depuis Telegram ; sans lui, visibles des administrateurs seuls) et `IMV_TELEGRAM_LANGUAGE` (`fr` par défaut, ou `en`).
@@ -236,7 +264,7 @@ Un groupe Telegram peut tenir lieu de chat de réunion : Oscar y suit la convers
    - taper **`/oscar`** dans le groupe (utilisateur autorisé) : la session démarre, et la personne qui l'a lancée est responsable d'IMV ;
    - ou, dans la page, choisir le groupe dans « Groupe Telegram » (lien `telegram:<id>`) et cliquer « Lancer ».
 
-Les commandes Telegram (`/resume`, `/pistes`, `/aide`, `/clore`…) valent `imv resume`, `imv pistes`… ; une mention du bot en tête de message vaut l'appel par le nom. « Quitter la réunion » arrête le suivi (le bot reste dans le groupe) ; retirer le bot du groupe termine la session. `join telegram:<id>` fonctionne aussi en ligne de commande. Un seul serveur à la fois peut utiliser un même bot.
+Les commandes Telegram (`/resume`, `/pistes`, `/aide`, `/clore`…) valent `imv resume`, `imv pistes`… ; une mention du bot en tête de message vaut l'appel par le nom. Tant que le bot ne voit que les commandes (privacy mode, bot non administrateur), l'accueil, `imv statut` et les analyses le disent ; nommé administrateur pendant le suivi, il le confirme dans le groupe. « Quitter la réunion » arrête le suivi (le bot reste dans le groupe) ; retirer le bot du groupe termine la session. `join telegram:<id>` fonctionne aussi en ligne de commande. Un seul serveur à la fois peut utiliser un même bot.
 
 Sur Telegram, chaque participant apparaît avec son identifiant numérique, par exemple « Bob Durand (#11) » : le nom affiché se choisit librement, l'identifiant non. Un homonyme ne peut donc pas se faire passer pour le responsable. Pour désigner un responsable depuis la page, indiquez ce nom complet, identifiant compris ; sinon, le responsable est la personne qui a tapé `/oscar`, ou la première qui s'adresse à Oscar.
 

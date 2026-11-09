@@ -10,7 +10,6 @@ import pytest
 from fastapi.testclient import TestClient
 
 import imo.runner
-from imo.agent import WELCOME
 from imo.connectors.teams import TeamsSession
 from imo.models import ChatMessage
 from imo.runner import MeetingConfig, MeetingRunner
@@ -58,7 +57,7 @@ def test_runner_joins_reads_and_stops(fake_teams, caplog):
             await asyncio.sleep(0.1)
         assert runner.status == "in_meeting"
         sent = await runner.session.page.evaluate("window.sent")
-        assert sent[0].startswith(WELCOME["fr"].format(name="Test"))
+        assert sent[0].startswith("Bonjour, je suis Test, l'assistant de l'Incident Manager")
 
         runner.stop()
         assert await asyncio.wait_for(task, 10) == 0
@@ -309,12 +308,29 @@ def test_server_runs_agent_commands_through_the_api(fake_teams, tmp_path):
         assert data["meeting"]["status"] == "ended"
 
 
-def test_runner_uses_separate_hermes_clients_for_analyses_and_tasks(monkeypatch):
+def test_runner_uses_separate_hermes_clients_for_analyses_and_research(monkeypatch):
     from imo.llm.providers import HERMES_ANALYSIS_MODE, HERMES_TASK_MODE
 
+    monkeypatch.delenv("IMV_AGENT_KEY", raising=False)
+    monkeypatch.delenv("IMV_AGENT_NAME", raising=False)
     monkeypatch.setenv("HERMES_API_KEY", "cle")
     runner = MeetingRunner(_config(llm="hermes"), Store(":memory:"))
     assert runner.llm.llm.mode == HERMES_ANALYSIS_MODE  # analyses : sans outil
-    assert runner.hermes.llm.mode == HERMES_TASK_MODE  # imv hermes : outils permis
+    assert runner.research.llm.mode == HERMES_TASK_MODE  # imv recherche : outils permis
+    assert runner.research_name == "Hermes"
     monkeypatch.delenv("HERMES_API_KEY")
-    assert MeetingRunner(_config(), Store(":memory:")).hermes is None
+    assert MeetingRunner(_config(), Store(":memory:")).research is None
+
+
+def test_research_agent_other_than_hermes(monkeypatch):
+    from imo.llm import LLMError, research_agent
+
+    monkeypatch.delenv("HERMES_API_KEY", raising=False)
+    monkeypatch.setenv("IMV_AGENT_KEY", "cle")
+    monkeypatch.setenv("IMV_AGENT_NAME", "Copilote")
+    monkeypatch.delenv("IMV_AGENT_URL", raising=False)
+    with pytest.raises(LLMError, match="IMV_AGENT_URL"):
+        research_agent()
+    monkeypatch.setenv("IMV_AGENT_URL", "http://127.0.0.1:9/v1")
+    agent, name = research_agent()
+    assert name == "Copilote" and agent.name == "copilote:default"

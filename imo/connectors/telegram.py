@@ -22,6 +22,7 @@ from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
 
 from imo.connectors import JoinError
+from imo.llm.providers import research_configured
 from imo.models import ChatMessage
 
 log = logging.getLogger(__name__)
@@ -31,17 +32,20 @@ MAX_MESSAGE = 4000  # limite Telegram : 4096 caractères
 POLL_TIMEOUT = 10  # secondes d'attente côté Telegram par requête getUpdates
 START_COMMAND = "oscar"  # « /oscar » dans un groupe sans session : démarre le suivi
 COMMANDS = [  # menu des commandes affiché par Telegram
-    ("oscar", "Démarrer le suivi par Oscar"),
+    ("oscar", "Faire suivre ce groupe par Oscar"),
+    ("demarrer", "Démarrer le suivi d'un incident : /demarrer INC123"),
     ("resume", "Point de situation"),
     ("pistes", "Hypothèses, vérifications, contournements"),
     ("questions", "Questions à poser maintenant"),
     ("timeline", "Chronologie"),
     ("actions", "Actions et owners"),
+    ("com", "Brouillon de communication : /com direction|utilisateurs|tech"),
     ("rapport", "Aperçu du résumé de fin"),
     ("statut", "État de l'agent"),
     ("aide", "Liste des commandes"),
     ("clore", "Clore l'incident (responsable)"),
 ]
+RESEARCH_COMMAND = ("recherche", "Recherche web confiée à l'agent : /recherche <sujet>")  # si configuré
 
 
 def is_telegram_url(url: str) -> bool:
@@ -147,9 +151,10 @@ class TelegramBot:
             if not self.reads_all_messages:
                 log.warning("Bot Telegram @%s : « privacy mode » actif, il ne voit que les commandes /… "
                             "(à désactiver avec @BotFather, /setprivacy, ou le nommer administrateur)", self.username)
+            commands = COMMANDS + ([RESEARCH_COMMAND] if research_configured() else [])
             try:
                 await self.api.call("setMyCommands", http_timeout=15, commands=[
-                    {"command": c, "description": d} for c, d in COMMANDS])
+                    {"command": c, "description": d} for c, d in commands])
             except TelegramAPIError as exc:
                 log.warning("Menu des commandes Telegram non enregistré : %s", exc)
             self._started_at = time.time()
@@ -199,6 +204,8 @@ class TelegramBot:
                     session.end("removed_from_group")
             else:
                 self._seen(chat)
+                if (session := self.sessions.get(chat["id"])) is not None:  # nommé ou retiré administrateur
+                    await session.member_status_changed(status in ("administrator", "creator"))
             return
         message = update.get("message")
         if not message:
@@ -267,6 +274,8 @@ class TelegramSession:
     """Une « réunion » Telegram : un groupe suivi par Oscar. Même interface que TeamsSession pour le
     runner ; pas de sous-titres ni de caméra. Quitter arrête le suivi, le bot reste dans le groupe."""
 
+    platform = "telegram"
+
     def __init__(self, url: str, display_name: str, *, bot: TelegramBot | None = None) -> None:
         self.chat_id = parse_chat_id(url)
         self.url = f"{URL_PREFIX}{self.chat_id}"
@@ -279,6 +288,8 @@ class TelegramSession:
         self._pending: list[ChatMessage] = []
         self._ended = asyncio.Event()
         self._end_reason = "ended"
+        # False en « privacy mode » sans être administrateur : seules les commandes /… arrivent.
+        self.sees_all_messages = True
 
     @property
     def bot(self) -> TelegramBot:
@@ -307,11 +318,8 @@ class TelegramSession:
         current = bot.sessions.get(self.chat_id)
         if current is not None and current is not self and not current._ended.is_set():
             raise JoinError("already_followed", f"le groupe « {self.title} » est déjà suivi par une autre session")
-        if not bot.reads_all_messages and not await self._is_admin():
-            await self.send_chat(
-                "Attention : je ne vois que les commandes /… de ce groupe. Pour suivre la conversation, "
-                "désactivez mon « privacy mode » (@BotFather, /setprivacy) ou nommez-moi administrateur."
-            )
+        # Annoncé par l'accueil, le statut et les analyses de l'agent
+        self.sees_all_messages = bot.reads_all_messages or await self._is_admin()
         self._joined_at = int(time.time())
         bot.sessions[self.chat_id] = self
         log.info("Groupe Telegram « %s » (%s) suivi", self.title, self.chat_id)
@@ -322,6 +330,13 @@ class TelegramSession:
         except TelegramAPIError:
             return False
         return member.get("status") in ("administrator", "creator")
+
+    async def member_status_changed(self, admin: bool) -> None:
+        """Bot nommé (ou retiré) administrateur du groupe pendant le suivi."""
+        sees_all = self.bot.reads_all_messages or admin
+        if sees_all and not self.sees_all_messages:
+            await self.send_chat("Merci : je vois maintenant toute la conversation de ce groupe.")
+        self.sees_all_messages = sees_all
 
     async def open_chat(self) -> None:
         return None

@@ -51,7 +51,7 @@ services:
       # En-têtes X-Forwarded-* de Traefik acceptés (schéma https : cookie Secure). Sans risque :
       # le conteneur n'est joignable que depuis le VPS (réseau Docker, aucun port publié).
       FORWARDED_ALLOW_IPS: "*"
-      # Agent Hermes du VPS (imv hermes <tâche>, LLM « hermes »), joint par Traefik ; clé : HERMES_API_KEY
+      # Agent Hermes du VPS (imv recherche <sujet>, LLM « hermes »), facultatif, joint par Traefik ; clé : HERMES_API_KEY
       HERMES_API_URL: ${HERMES_API_URL:-http://172.30.0.1:8642/p/oscar/v1}
     volumes:
       - ./data:/data  # base, captures, contexte.md (appartenant à l'uid 1001)

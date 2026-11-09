@@ -27,6 +27,7 @@ class FakeTelegram:
 
     def __init__(self, chats=(GROUP,)) -> None:
         self.chats = {c["id"]: c for c in chats}
+        self.bot = dict(BOT)
         self.updates: list[dict] = []
         self.sent: list[dict] = []
         self.lock = threading.Lock()
@@ -54,7 +55,7 @@ class FakeTelegram:
     def handle(self, method: str, params: dict) -> tuple[int, dict]:
         ok = lambda result: (200, {"ok": True, "result": result})  # noqa: E731
         if method == "getMe":
-            return ok(BOT)
+            return ok(self.bot)
         if method == "setMyCommands":
             return ok(True)
         if method == "getChat":
@@ -85,9 +86,12 @@ class FakeTelegram:
             self._next_id += 1
 
     def push_removed(self, chat: dict = GROUP) -> None:
+        self.push_member("kicked", chat)
+
+    def push_member(self, status: str, chat: dict = GROUP) -> None:
         with self.lock:
             self.updates.append({"update_id": self._next_id, "my_chat_member": {
-                "chat": chat, "new_chat_member": {"user": BOT, "status": "kicked"}}})
+                "chat": chat, "new_chat_member": {"user": BOT, "status": status}}})
             self._next_id += 1
 
     def texts(self) -> list[str]:
@@ -163,7 +167,7 @@ def test_runner_follows_a_telegram_group(telegram):
     texts = telegram.texts()
     assert len(texts) == 5, texts  # accueil, statut, aide, démarrage, refus : rien pour le message d'avant l'arrivée
     assert "enregistrement : actif" in texts[1]  # réponse à « Oscar, statut »
-    assert "imv hermes" in texts[2]  # aide complète
+    assert "imv démarrer" in texts[2] and "imv recherche" not in texts[2]  # aide, sans agent de recherche
     assert "INC77" in texts[3] and store.session_incident(runner.session_id)["ref"] == "INC77"
     assert "Bob Durand (#66)" in texts[4] and "réservé aux responsables" in texts[4]
     messages = [(m["author_name"], m["text"]) for m in store.messages(runner.session_id)]
@@ -171,6 +175,37 @@ def test_runner_follows_a_telegram_group(telegram):
     assert ("Bob Durand (#11)", "imv aide") in messages
     assert not any("autre_bot" in t for _, t in messages)
     assert runner.status == "ended" and runner.session.url == "telegram:-100123"
+
+
+def test_privacy_mode_is_announced_until_the_bot_is_admin(telegram):
+    """Bot en « privacy mode » : l'accueil et le statut le disent ; nommé administrateur pendant le
+    suivi, il le confirme et le statut n'en parle plus."""
+    telegram.bot["can_read_all_group_messages"] = False
+
+    async def scenario():
+        from imo.connectors.telegram import get_bot
+
+        store = Store(":memory:")
+        runner = MeetingRunner(MeetingConfig(url="telegram:-100123", name="IMV - Oscar", managers=["Bob Durand (#11)"],
+                                             debug_dir=None), store)
+        task = asyncio.create_task(runner.run())
+        await _until(lambda: runner.status == "in_meeting" and telegram.sent)
+        telegram.push_message(BOB, "/statut")
+        await _until(lambda: len(telegram.sent) >= 2)
+        telegram.push_member("administrator")
+        await _until(lambda: len(telegram.sent) >= 3)
+        telegram.push_message(BOB, "/statut")
+        await _until(lambda: len(telegram.sent) >= 4)
+        runner.stop()
+        await asyncio.wait_for(task, 10)
+        await get_bot().stop()
+
+    asyncio.run(scenario())
+    welcome, blind_status, thanks, status = telegram.texts()[:4]
+    assert "messages de ce groupe" in welcome and "nommez-moi administrateur" in welcome
+    assert "nommez-moi administrateur" in blind_status
+    assert thanks.startswith("Merci : je vois maintenant toute la conversation")
+    assert "enregistrement : actif" in status and "nommez-moi" not in status
 
 
 def test_unknown_telegram_group_fails_cleanly(telegram):
